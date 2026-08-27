@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# 秘密与钥匙（绝不入库）
+cookies.json
+*.cookie
+secrets*
+.env
+config.local.json
+
+# 运行数据
+data/
+logs/
+
+# 系统杂物
+Thumbs.db
+.DS_Store
