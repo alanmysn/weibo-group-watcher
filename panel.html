@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>群消息面板</title>
+<style>
+  :root {
+    --bg: #f4f5f7; --card: #ffffff; --text: #1c1e21; --muted: #8a8f98;
+    --accent: #1d9bf0; --border: #e4e6ea; --sys: #606770;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: var(--bg); color: var(--text);
+    font-family: -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+    font-size: 15px; line-height: 1.45;
+  }
+  header {
+    position: sticky; top: 0; z-index: 10;
+    display: flex; align-items: center; gap: 8px;
+    padding: 10px 14px; background: rgba(255,255,255,.95);
+    border-bottom: 1px solid var(--border);
+  }
+  #dot { width: 9px; height: 9px; border-radius: 50%; background: var(--muted); }
+  #dot.online { background: #00ba7c; }
+  #dot.reconnecting { background: #ffb020; animation: blink 1s infinite; }
+  #dot.expired { background: #f4212e; }
+  @keyframes blink { 50% { opacity: .3; } }
+  #status-text { color: var(--muted); font-size: 13px; }
+  #count { margin-left: auto; color: var(--muted); font-size: 13px; }
+  main { max-width: 680px; margin: 0 auto; padding: 8px 0 40px; }
+  .msg { display: flex; gap: 10px; padding: 10px 14px; border-bottom: 1px solid var(--border); }
+  .avatar-wrap { flex: none; position: relative; width: 38px; height: 38px; }
+  .avatar-letter {
+    width: 100%; height: 100%; border-radius: 50%;
+    background: #e8edf2; color: #5b6572;
+    display: flex; align-items: center; justify-content: center;
+    font-weight: 700; font-size: 15px;
+  }
+  .avatar-img {
+    position: absolute; inset: 0; width: 100%; height: 100%;
+    border-radius: 50%; object-fit: cover;
+  }
+  .body { min-width: 0; flex: 1; }
+  .name-row { display: flex; align-items: baseline; gap: 8px; }
+  .name { font-weight: 700; }
+  .time { color: var(--muted); font-size: 12.5px; }
+  .content { margin-top: 2px; white-space: pre-wrap; word-break: break-word; }
+  .content a { color: var(--accent); text-decoration: none; }
+  .content a:hover { text-decoration: underline; }
+  .emoji-img { height: 1.3em; vertical-align: -0.25em; }
+  .img-embed { display: block; max-width: 320px; border-radius: 10px; margin-top: 6px; }
+  .recall { color: #c00; font-size: 12.5px; }
+  .sys { justify-content: center; padding: 6px 14px; }
+  .sys .avatar-wrap { display: none; }
+  .sys .name-row { display: none; }
+  .sys .body { color: var(--sys); font-size: 13.5px; }
+  .card {
+    margin-top: 6px; border: 1px solid var(--border); border-radius: 10px;
+    overflow: hidden; display: block; text-decoration: none; color: inherit;
+  }
+  .card img { width: 100%; max-height: 220px; object-fit: cover; display: block; }
+  .card .card-body { padding: 8px 12px; }
+  .card .card-title {
+    font-size: 14px; display: -webkit-box; -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical; overflow: hidden;
+  }
+  .card .card-meta { color: var(--muted); font-size: 12px; margin-top: 4px; }
+  .video-tag {
+    display: inline-block; background: #eef3f8; color: #5b6572;
+    border-radius: 6px; padding: 1px 8px; font-size: 12px; margin-bottom: 4px;
+  }
+  .loading { text-align: center; color: var(--muted); padding: 14px; font-size: 13px; }
+  .sentinel { height: 1px; }
+</style>
+</head>
+<body>
+<header>
+  <span id="dot"></span><span id="status-text">连接中…</span>
+  <span id="count"></span>
+</header>
+<main id="feed">
+  <div class="sentinel" id="sentinel"></div>
+</main>
+
+<script>
+const feed = document.getElementById('feed');
+const sentinel = document.getElementById('sentinel');
+const dot = document.getElementById('dot');
+const statusText = document.getElementById('status-text');
+const countEl = document.getElementById('count');
+
+let oldestId = null;
+let loading = false;
+const seen = new Set();
+let emojiMap = {};   // [短语] → /api/emoji/xxx
+
+function esc(s) {
+  const d = document.createElement('div');
+  d.textContent = s ?? '';
+  return d.innerHTML;
+}
+
+function fmtTime(ts) {
+  if (!ts) return '';
+  const d = new Date(ts * 1000);
+  const today = new Date().toDateString() === d.toDateString();
+  const hm = `${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;
+  return today ? hm : `${d.getMonth()+1}/${d.getDate()} ${hm}`;
+}
+
+// [表情名] → 表情图
+function renderEmoji(text) {
+  const t = esc(text);
+  if (!Object.keys(emojiMap).length) return t;
+  return t.replace(/\[([^\]]+)\]/g, (m, name) => {
+    const key = `[${name}]`;
+    return emojiMap[key] ? `<img class="emoji-img" src="${emojiMap[key]}" alt="${esc(key)}">` : m;
+  });
+}
+
+function avatarHtml(m) {
+  if (!m.avatar_url) return `<div class="avatar-wrap"><div class="avatar-letter">${esc((m.from_name || '?').slice(0,1).toUpperCase())}</div></div>`;
+  return `<div class="avatar-wrap"><div class="avatar-letter">${esc((m.from_name || '?').slice(0,1).toUpperCase())}</div>` +
+         `<img class="avatar-img" src="/api/avatar/${encodeURIComponent(m.from_uid)}" loading="lazy" onerror="this.remove()"></div>`;
+}
+
+function cardHtml(m) {
+  let uo;
+  try { uo = JSON.parse(m.url_objects || '[]'); } catch (e) { uo = []; }
+  const obj = (uo[0] || {});
+  const status = obj.status || {};
+  const info = obj.info || {};
+  const title = status.text || m.content || '分享的微博';
+  const author = (status.user || {}).screen_name || '';
+  const link = info.url_short || obj.url_ori || m.content;
+  const stats = [
+    status.reposts_count != null ? `${status.reposts_count} 转发` : '',
+    status.comments_count != null ? `${status.comments_count} 评论` : '',
+    status.attitudes_count != null ? `${status.attitudes_count} 赞` : '',
+  ].filter(Boolean).join(' · ');
+  // 视频分享：封面留到第 7 步图片模块，先给标记占位
+  const isVideo = !!(status.page_info && status.page_info.type === 'video')
+                  || !!status.video_info;
+  let img = '';
+  if ((status.pic_ids || []).length) {
+    img = `<img src="https://wx1.sinaimg.cn/thumbnail/${status.pic_ids[0]}.jpg" loading="lazy" onerror="this.remove()">`;
+  }
+  const videoTag = isVideo ? '<div class="video-tag">📹 视频分享（封面第 7 步接入）</div>' : '';
+  return `<a class="card" href="${esc(link)}" target="_blank" rel="noopener">${img}<div class="card-body">` +
+         `${videoTag}<div class="card-title">${renderEmoji(title)}</div>` +
+         `<div class="card-meta">${esc([author, stats].filter(Boolean).join(' · '))}</div>` +
+         `</div></a>`;
+}
+
+function makeNode(m) {
+  const div = document.createElement('div');
+  const isSys = m.type === 344;
+  div.className = 'msg' + (isSys ? ' sys' : '');
+  if (isSys) {
+    div.innerHTML = `<div class="body">${esc(m.content)}</div>`;
+    return div;
+  }
+  const name = m.from_name || '未知';
+  let inner = `<div class="name-row"><span class="name">${esc(name)}</span>` +
+              `<span class="time">${fmtTime(m.time)}</span></div>`;
+  if (m.recall_status) {
+    inner += `<div class="content recall">↩︎ ${renderEmoji(m.content)}（已撤回）</div>`;
+  } else if (m.media_type === 1) {
+    inner += `<div class="content">${renderEmoji(m.content)}</div>` +
+             `<span class="img-embed">🖼️ [图片消息，第 7 步接入显示]</span>`;
+  } else if (m.media_type === 14) {
+    inner += `<div class="content">${renderEmoji(m.content)}</div>` + cardHtml(m);
+  } else {
+    inner += `<div class="content">${renderEmoji(m.content)}</div>`;
+  }
+  div.innerHTML = avatarHtml(m) + `<div class="body">${inner}</div>`;
+  return div;
+}
+
+function prependBatch(msgs) {
+  const frag = document.createDocumentFragment();
+  for (const m of msgs) {
+    if (seen.has(m.id)) continue;
+    seen.add(m.id);
+    frag.appendChild(makeNode(m));
+    if (oldestId === null || m.id < oldestId) oldestId = m.id;
+  }
+  sentinel.after(frag);
+}
+
+async function loadOlder() {
+  if (loading) return;
+  loading = true;
+  const tip = document.createElement('div');
+  tip.className = 'loading'; tip.textContent = '加载中…';
+  feed.appendChild(tip);
+  try {
+    const url = oldestId ? `/api/messages?before=${oldestId}&limit=50` : '/api/messages?limit=50';
+    const data = await (await fetch(url)).json();
+    tip.remove();
+    if (!data.messages.length && oldestId === null) {
+      tip.textContent = '还没有消息，等第一条进来说话';
+      feed.appendChild(tip);
+      return;
+    }
+    prependBatch(data.messages);
+    if (!data.has_more && oldestId !== null) {
+      const end = document.createElement('div');
+      end.className = 'loading'; end.textContent = '—— 已经到最初的消息 ——';
+      sentinel.after(end);
+      oldestId = 'done';
+    }
+  } catch (e) {
+    tip.textContent = '加载失败，稍后自动重试';
+    setTimeout(() => { tip.remove(); loadOlder(); }, 3000);
+  } finally {
+    if (tip.parentNode) tip.remove();
+    loading = false;
+  }
+}
+
+const io = new IntersectionObserver((entries) => {
+  if (entries[0].isIntersecting && oldestId !== 'done') loadOlder();
+}, { rootMargin: '200px' });
+io.observe(sentinel);
+
+async function pollState() {
+  try {
+    const s = await (await fetch('/api/state')).json();
+    dot.className = '';
+    if (s.status) dot.classList.add(s.status);
+    const map = { online: '在线 · 实时监听中', reconnecting: '重连中…',
+                  expired: '钥匙过期，需重新扫码', stopped: '已停止' };
+    statusText.textContent = map[s.status] || s.status || '未知';
+    if (s.stored_total) countEl.textContent = `共 ${s.stored_total} 条`;
+  } catch (e) { statusText.textContent = '服务未响应'; }
+}
+setInterval(pollState, 5000);
+pollState();
+
+async function loadEmojis() {
+  try { emojiMap = await (await fetch('/api/emojis')).json(); } catch (e) {}
+}
+loadEmojis();
+
+const es = new EventSource('/api/stream');
+es.onmessage = (ev) => {
+  const m = JSON.parse(ev.data);
+  if (seen.has(m.id)) return;
+  seen.add(m.id);
+  const nearBottom = window.innerHeight + window.scrollY >= document.body.scrollHeight - 300;
+  feed.appendChild(makeNode(m));
+  if (nearBottom) window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
+};
+
+loadOlder();
+</script>
+</body>
+</html>

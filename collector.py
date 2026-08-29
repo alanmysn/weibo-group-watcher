@@ -192,26 +192,46 @@ def _handle_push(item, gid):
 
 
 def _store_message(info, gid):
-    """单条群消息落库（消息 ID 主键天然去重）。"""
+    """单条群消息落库（消息 ID 主键天然去重；重复时刷新富字段）。"""
     conn = store.get_conn()
     try:
+        avatar_url = (info.get("from_user") or {}).get("profile_image_url", "")
+        url_objects = json.dumps(info.get("url_objects") or [],
+                                 ensure_ascii=False)
         cur = conn.execute(
             "INSERT OR IGNORE INTO messages "
-            "(id, gid, from_uid, from_name, content, type, media_type, "
-            " time, recall_status) VALUES (?,?,?,?,?,?,?,?,?)",
+            "(id, gid, from_uid, from_name, avatar_url, content, url_objects, "
+            " type, media_type, time, recall_status) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
             (info.get("id"), gid, str(info.get("from_uid", "")),
              (info.get("from_user") or {}).get("screen_name", ""),
-             info.get("content", ""), info.get("type"),
-             info.get("media_type", 0), info.get("time"),
+             avatar_url, info.get("content", ""), url_objects,
+             info.get("type"), info.get("media_type", 0), info.get("time"),
              info.get("recall_status", 0)),
         )
+        # 重复消息也刷新头像/分享包（头像链接 3h 过期，重连回放时顺手续命）
+        conn.execute("UPDATE messages SET avatar_url=?, url_objects=?, "
+                     "from_name=?, recall_status=? WHERE id=?",
+                     (avatar_url, url_objects,
+                      (info.get("from_user") or {}).get("screen_name", ""),
+                      info.get("recall_status", 0), info.get("id")))
         conn.commit()
         if cur.rowcount:
             name = (info.get("from_user") or {}).get("screen_name", "?")
             text = (info.get("content") or "").replace("\n", " ")[:40]
             log.info("收到并入库 [%s] %s", name, text)
-            import runtime_state
             runtime_state.touch_message()
+            try:
+                import web
+                web.broadcast({"id": info.get("id"), "from_name": name,
+                               "content": info.get("content", ""),
+                               "type": info.get("type"),
+                               "media_type": info.get("media_type", 0),
+                               "time": info.get("time"),
+                               "recall_status": info.get("recall_status", 0),
+                               "avatar_url": avatar_url,
+                               "url_objects": url_objects})
+            except Exception:
+                pass  # 面板广播失败不影响采集主流程
             return 1
         log.debug("重复消息跳过 id=%s", info.get("id"))
         return 0

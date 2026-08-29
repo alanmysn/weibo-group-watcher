@@ -45,8 +45,10 @@ def cmd_run(_args):
 
     import backfill
     import collector
+    import web
 
     cfg = config.load_config()
+    store.init_db()  # 幂等建表+老库自动补列
     log = logging.getLogger("watcher")
     log.info("采集器启动（群：%s）", config.masked_group_label())
 
@@ -55,6 +57,9 @@ def cmd_run(_args):
         backfill.backfill_once(cfg)
     except Exception as e:
         log.warning("启动补漏失败（%s）——长连接照常先行", e)
+
+    # 面板服务（后台线程，仅本机）
+    web.start(cfg)
 
     # 常态对账保险丝：每小时一次（后台线程）
     stop_event = threading.Event()

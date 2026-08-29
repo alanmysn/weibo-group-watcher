@@ -16,7 +16,9 @@ CREATE TABLE IF NOT EXISTS messages (
     gid           TEXT NOT NULL,         -- 群 ID（存于本地库，不入 git）
     from_uid      TEXT,                  -- 发言人 UID
     from_name     TEXT,                  -- 发言人昵称（采集时刻快照）
+    avatar_url    TEXT,                  -- 发言人头像地址（3h 时效，本地缓存）
     content       TEXT,                  -- 文本内容 / 链接
+    url_objects   TEXT,                  -- 分享消息的原帖数据包（JSON）
     type          INTEGER,               -- 消息类型（321 正文 / 344 系统通知…）
     media_type    INTEGER DEFAULT 0,     -- 媒体类型（0 文字 / 1 图片 / 14 链接分享…）
     time          INTEGER,               -- 微博侧时间戳（秒）
@@ -64,10 +66,15 @@ def get_conn():
 
 
 def init_db():
-    """建库建表（幂等：已存在则跳过）。"""
+    """建库建表（幂等：已存在则跳过）；老库自动补新增列。"""
     conn = get_conn()
     try:
         conn.executescript(SCHEMA)
+        for col in ("avatar_url TEXT", "url_objects TEXT"):
+            try:
+                conn.execute(f"ALTER TABLE messages ADD COLUMN {col}")
+            except sqlite3.OperationalError:
+                pass  # 列已存在
         conn.commit()
     finally:
         conn.close()

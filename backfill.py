@@ -107,19 +107,27 @@ def _count_total():
 
 
 def _store(m, gid):
-    """单条落库（复用主键去重），返回是否新入库。"""
+    """单条落库（幂等去重，重复时刷新头像/分享包），返回是否新入库。"""
     conn = store.get_conn()
     try:
+        avatar_url = (m.get("from_user") or {}).get("profile_image_url", "")
+        url_objects = json.dumps(m.get("url_objects") or [],
+                                 ensure_ascii=False)
         cur = conn.execute(
             "INSERT OR IGNORE INTO messages "
-            "(id, gid, from_uid, from_name, content, type, media_type, "
-            " time, recall_status) VALUES (?,?,?,?,?,?,?,?,?)",
+            "(id, gid, from_uid, from_name, avatar_url, content, url_objects, "
+            " type, media_type, time, recall_status) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
             (m.get("id"), gid, str(m.get("from_uid", "")),
              (m.get("from_user") or {}).get("screen_name", ""),
-             m.get("content", ""), m.get("type"),
-             m.get("media_type", 0), m.get("time"),
+             avatar_url, m.get("content", ""), url_objects,
+             m.get("type"), m.get("media_type", 0), m.get("time"),
              m.get("recall_status", 0)),
         )
+        conn.execute("UPDATE messages SET avatar_url=?, url_objects=?, "
+                     "from_name=?, recall_status=? WHERE id=?",
+                     (avatar_url, url_objects,
+                      (m.get("from_user") or {}).get("screen_name", ""),
+                      m.get("recall_status", 0), m.get("id")))
         conn.commit()
         return 1 if cur.rowcount else 0
     finally:
