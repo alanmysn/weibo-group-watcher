@@ -71,3 +71,13 @@ def init_db():
         conn.commit()
     finally:
         conn.close()
+
+
+def get_max_msg_id():
+    """当前库内最新消息 ID（补漏锚点）；空库返回 None。"""
+    conn = get_conn()
+    try:
+        row = conn.execute("SELECT MAX(id) FROM messages").fetchone()
+        return row[0]
+    finally:
+        conn.close()

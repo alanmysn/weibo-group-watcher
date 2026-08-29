@@ -41,12 +41,28 @@ def cmd_init(_args):
 
 
 def cmd_run(_args):
+    import threading
+
+    import backfill
     import collector
 
     cfg = config.load_config()
     log = logging.getLogger("watcher")
     log.info("采集器启动（群：%s）", config.masked_group_label())
-    collector.start(cfg)
+
+    # 开工先补漏对账（收回睡眠/断网/被踢窗口的漏网消息），再进长连接
+    try:
+        backfill.backfill_once(cfg)
+    except Exception as e:
+        log.warning("启动补漏失败（%s）——长连接照常先行", e)
+
+    # 常态对账保险丝：每小时一次（后台线程）
+    stop_event = threading.Event()
+    t = threading.Thread(target=backfill.start_periodic,
+                         args=(cfg, stop_event), daemon=True)
+    t.start()
+
+    collector.start(cfg, stop_event)
 
 
 def main():

@@ -13,6 +13,7 @@ import time
 
 import websocket
 
+import runtime_state
 import store
 
 log = logging.getLogger("watcher.collector")
@@ -52,15 +53,20 @@ def start(cfg, stop_event=None):
     原地重连重新握手，温和退避，不自杀退出。
     """
     backoff = 2
+    runtime_state.set_status("reconnecting", "启动中")
     while True:
         try:
             _run_session(cfg, stop_event)
+            runtime_state.set_status("stopped")
             return  # 正常停止
         except SessionExpired as e:
             log.warning("会话被服务器作废（%s），%d 秒后重新握手", e, backoff)
+            runtime_state.set_status("reconnecting", f"会话失效: {e}")
         except (websocket.WebSocketException, OSError) as e:
             log.warning("连接异常断开（%s），%d 秒后重连", e, backoff)
+            runtime_state.set_status("reconnecting", f"连接断开: {e}")
         if stop_event is not None and stop_event.is_set():
+            runtime_state.set_status("stopped")
             return
         time.sleep(backoff)
         backoff = min(backoff * 2, 60)
@@ -134,6 +140,7 @@ def _run_session(cfg, stop_event=None):
                 activated = True  # 回执已到 → 立即进入正式循环
                 break
     log.info("长轮询循环已激活")
+    runtime_state.set_status("online", "实时监听中")
 
     # ④ 普通 connect 循环：服务器捏住 ~170 秒 → 回复 → 立即发下一个。
     #    同一时刻只有一个未决 connect（这是 Bayeux 的规矩）。
@@ -203,6 +210,8 @@ def _store_message(info, gid):
             name = (info.get("from_user") or {}).get("screen_name", "?")
             text = (info.get("content") or "").replace("\n", " ")[:40]
             log.info("收到并入库 [%s] %s", name, text)
+            import runtime_state
+            runtime_state.touch_message()
             return 1
         log.debug("重复消息跳过 id=%s", info.get("id"))
         return 0
