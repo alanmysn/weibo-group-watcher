@@ -40,14 +40,26 @@ def cmd_init(_args):
     log.info("数据库就绪：%s", store.DB_PATH)
 
 
+def cmd_run(_args):
+    import collector
+
+    cfg = config.load_config()
+    log = logging.getLogger("watcher")
+    log.info("采集器启动（群：%s）", config.masked_group_label())
+    collector.start(cfg)
+
+
 def main():
     setup_logging()
     parser = argparse.ArgumentParser(description="weibo-group-watcher")
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("init", help="初始化：检查配置、建库建表")
+    sub.add_parser("run", help="启动采集器（长连接监听群消息）")
     args = parser.parse_args()
     if args.command == "init":
         cmd_init(args)
+    elif args.command == "run":
+        cmd_run(args)
 
 
 if __name__ == "__main__":
