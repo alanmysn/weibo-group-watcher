@@ -136,6 +136,25 @@ def count_unread():
         conn.close()
 
 
+def get_first_unread_id():
+    """当前第一条待读消息 ID；没有待读时返回 None。"""
+    conn = get_conn()
+    try:
+        last = get_last_read_id()
+        if last is None:
+            row = conn.execute(
+                "SELECT id FROM messages ORDER BY id LIMIT 1"
+            ).fetchone()
+        else:
+            row = conn.execute(
+                "SELECT id FROM messages WHERE id > ? ORDER BY id LIMIT 1",
+                (last,),
+            ).fetchone()
+        return row[0] if row else None
+    finally:
+        conn.close()
+
+
 def open_gap(start_ts):
     """记录缺口开始（幂等：已有未闭合缺口则不新建）。"""
     conn = get_conn()

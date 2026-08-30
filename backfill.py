@@ -11,7 +11,6 @@ import time
 
 import requests
 
-import config
 import runtime_state
 import store
 
@@ -22,7 +21,6 @@ SOURCE = "209678993"
 PAGE_SIZE = 50
 PAGE_INTERVAL = 0.5          # 页间隔（秒），动作温和
 MAX_PER_RUN = 2000           # 单次补漏上限
-RUN_INTERVAL = 3600          # 常态对账间隔（秒）
 
 
 def _headers(cookie_path):
@@ -132,16 +130,3 @@ def _store(m, gid):
         return 1 if cur.rowcount else 0
     finally:
         conn.close()
-
-
-def start_periodic(cfg, stop_event=None):
-    """常态对账：每小时兜底核对一次（长连接才是主力，这是保险丝）。"""
-    while True:
-        if stop_event is not None and stop_event.is_set():
-            return
-        try:
-            backfill_once(cfg)
-        except Exception as e:  # 对账失败不致命，下小时再试
-            log.warning("常态对账失败（%s），下轮再试", e)
-        if stop_event is not None and stop_event.wait(RUN_INTERVAL):
-            return

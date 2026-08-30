@@ -125,7 +125,11 @@ let loading = false;
 const seen = new Set();
 let emojiMap = {};   // [短语] → /api/emoji/xxx
 let lastReadId = null;  // 已读锚点（服务端为准，本地缓存用于分割线/上报）
+let firstUnreadId = null;  // 服务端明确给出的当前第一条待读消息
 let unread = 0;
+let jumpingToUnread = false;
+let initialPositioning = true;
+let initialLoadDone = false;
 
 function esc(s) {
   const d = document.createElement('div');
@@ -211,22 +215,34 @@ function makeNode(m) {
   return div;
 }
 
+function findMessage(id) {
+  return [...feed.querySelectorAll('.msg')]
+    .find(el => Number(el.dataset.id) === Number(id)) || null;
+}
+
+function placeDividerBefore(id) {
+  const msg = findMessage(id);
+  if (!msg) return null;
+  const old = document.getElementById('read-divider');
+  if (old) old.remove();
+  const d = document.createElement('div');
+  d.className = 'divider';
+  d.id = 'read-divider';
+  d.textContent = '—— 上次看到这里 · 以下是新消息 ——';
+  msg.before(d);
+  return d;
+}
+
 function prependBatch(msgs) {
   const frag = document.createDocumentFragment();
   for (const m of msgs) {
     if (seen.has(m.id)) continue;
     seen.add(m.id);
     frag.appendChild(makeNode(m));
-    if (lastReadId && m.id === lastReadId) {
-      const d = document.createElement('div');
-      d.className = 'divider';
-      d.id = 'read-divider';
-      d.textContent = '—— 上次看到这里 · 以下是新消息 ——';
-      frag.appendChild(d);
-    }
     if (oldestId === null || m.id < oldestId) oldestId = m.id;
   }
   sentinel.after(frag);
+  if (firstUnreadId) placeDividerBefore(firstUnreadId);
 }
 
 async function loadOlder() {
@@ -261,7 +277,9 @@ async function loadOlder() {
 }
 
 const io = new IntersectionObserver((entries) => {
-  if (entries[0].isIntersecting && oldestId !== 'done') loadOlder();
+  if (initialLoadDone && entries[0].isIntersecting && oldestId !== 'done') {
+    loadOlder();
+  }
 }, { rootMargin: '200px' });
 io.observe(sentinel);
 
@@ -305,6 +323,7 @@ async function pollState() {
     if (s.stored_total) countEl.textContent = `共 ${s.stored_total} 条`;
     if (s.unread != null) { unread = s.unread; updateBadge(); }
     if (s.last_read_id != null) lastReadId = s.last_read_id;
+    firstUnreadId = s.first_unread_id ?? null;
   } catch (e) { statusText.textContent = '服务未响应'; }
 }
 setInterval(pollState, 5000);
@@ -323,7 +342,8 @@ function updateBadge() {
 // 上报已读：视野内最新一条消息的 ID（防抖）
 let readTimer = null;
 function reportRead(id) {
-  if (!id || (lastReadId && id <= lastReadId)) return;
+  if (initialPositioning || jumpingToUnread || !id
+      || (lastReadId && id <= lastReadId)) return;
   clearTimeout(readTimer);
   readTimer = setTimeout(async () => {
     try {
@@ -341,6 +361,7 @@ function reportRead(id) {
 // 滚动即已读：向上翻历史/向下看新消息，视野内最新一条上报
 let scrollTimer = null;
 window.addEventListener('scroll', () => {
+  if (initialPositioning) return;
   clearTimeout(scrollTimer);
   scrollTimer = setTimeout(() => {
     let maxVisible = 0;
@@ -357,13 +378,28 @@ window.addEventListener('scroll', () => {
 
 // 点击角标 → 跳到最早待读处（分割线）
 badgeEl.addEventListener('click', async () => {
-  let div = document.getElementById('read-divider');
-  while (!div && oldestId !== 'done') {
-    await loadOlder();
-    div = document.getElementById('read-divider');
+  jumpingToUnread = true;
+  try {
+    const s = await (await fetch('/api/state')).json();
+    const targetId = s.first_unread_id;
+    if (!targetId) {
+      unread = 0; updateBadge(); return;
+    }
+    let msg = findMessage(targetId);
+    while (!msg && oldestId !== 'done') {
+      if (loading) {
+        await new Promise(resolve => setTimeout(resolve, 100));
+      } else {
+        await loadOlder();
+      }
+      msg = findMessage(targetId);
+    }
+    if (!msg) return;  // 找不到时留在原处，绝不再跳到最顶部
+    const div = placeDividerBefore(targetId);
+    if (div) div.scrollIntoView({ block: 'start' });
+  } finally {
+    setTimeout(() => { jumpingToUnread = false; }, 500);
   }
-  if (div) div.scrollIntoView({ block: 'start' });
-  else if (oldestId === 'done') window.scrollTo({ top: 0 });
 });
 
 async function loadEmojis() {
@@ -395,6 +431,12 @@ es.onmessage = (ev) => {
 (async () => {
   await pollState();      // 先拿已读锚点 → 首次渲染才能画出分割线
   await loadOlder();
+  // 首页始终展示最新消息；这次程序自动滚动不算用户阅读。
+  window.scrollTo({ top: document.documentElement.scrollHeight });
+  setTimeout(() => {
+    initialPositioning = false;
+    initialLoadDone = true;
+  }, 500);
 })();
 </script>
 </body>

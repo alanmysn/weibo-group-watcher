@@ -123,7 +123,9 @@ def api_state():
     s = runtime_state.snapshot()
     s["unread"] = store.count_unread()
     s["last_read_id"] = store.get_last_read_id()
+    s["first_unread_id"] = store.get_first_unread_id()
     s["latest_id"] = store.get_max_msg_id()
+    s["pid"] = os.getpid()
     # 总数实时查库（meta 里的 stored_total 是补漏时快照，会过期）
     conn = store.get_conn()
     try:
@@ -132,6 +134,16 @@ def api_state():
     finally:
         conn.close()
     return jsonify(s)
+
+
+@app.route("/api/prepare-stop", methods=["POST"])
+def api_prepare_stop():
+    """停止脚本调用：先记下准确停机时刻，再由脚本结束本进程。"""
+    now = int(time.time())
+    store.set_meta("last_online_at", now)
+    store.open_gap(now)
+    runtime_state.set_status("stopped", "用户停止")
+    return jsonify({"ok": True, "pid": os.getpid()})
 
 
 @app.route("/api/read", methods=["POST"])
