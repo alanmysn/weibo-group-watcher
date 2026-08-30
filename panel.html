@@ -72,13 +72,43 @@
   }
   .loading { text-align: center; color: var(--muted); padding: 14px; font-size: 13px; }
   .sentinel { height: 1px; }
+  .divider {
+    text-align: center; color: var(--accent); font-size: 12.5px;
+    padding: 10px 0; position: relative; margin: 4px 14px;
+  }
+  .divider::before, .divider::after {
+    content: ''; position: absolute; top: 50%; width: 30%;
+    border-top: 1px solid var(--accent); opacity: .45;
+  }
+  .divider::before { left: 0; } .divider::after { right: 0; }
+  #unread-badge {
+    margin-left: 8px; background: var(--accent); color: #fff;
+    border: none; border-radius: 999px; padding: 3px 10px;
+    font-size: 12.5px; cursor: pointer; font-family: inherit;
+  }
+  #unread-badge:hover { filter: brightness(1.1); }
+  #gaps-bar {
+    position: sticky; z-index: 9;
+    padding: 8px 14px; font-size: 13px; color: #8a6d1a;
+    background: #fff7e0; border-bottom: 1px solid #f0e2b6; display: none;
+  }
+  #gaps-bar .gap-item { margin: 2px 0; }
+  #gaps-bar button {
+    margin-left: 8px; border: 1px solid #d9b84a; background: #fff;
+    color: #8a6d1a; border-radius: 6px; padding: 2px 10px;
+    font-size: 12.5px; cursor: pointer; font-family: inherit;
+  }
+  #gaps-bar button:disabled { opacity: .6; cursor: wait; }
+  #gaps-bar button:hover:not(:disabled) { background: #fdf3d0; }
 </style>
 </head>
 <body>
 <header>
   <span id="dot"></span><span id="status-text">连接中…</span>
+  <button id="unread-badge" hidden title="跳到最早待读处">待读 <span id="unread-n">0</span></button>
   <span id="count"></span>
 </header>
+<div id="gaps-bar"></div>
 <main id="feed">
   <div class="sentinel" id="sentinel"></div>
 </main>
@@ -94,6 +124,8 @@ let oldestId = null;
 let loading = false;
 const seen = new Set();
 let emojiMap = {};   // [短语] → /api/emoji/xxx
+let lastReadId = null;  // 已读锚点（服务端为准，本地缓存用于分割线/上报）
+let unread = 0;
 
 function esc(s) {
   const d = document.createElement('div');
@@ -155,6 +187,7 @@ function cardHtml(m) {
 
 function makeNode(m) {
   const div = document.createElement('div');
+  div.dataset.id = m.id;   // 滚动已读检测用
   const isSys = m.type === 344;
   div.className = 'msg' + (isSys ? ' sys' : '');
   if (isSys) {
@@ -184,6 +217,13 @@ function prependBatch(msgs) {
     if (seen.has(m.id)) continue;
     seen.add(m.id);
     frag.appendChild(makeNode(m));
+    if (lastReadId && m.id === lastReadId) {
+      const d = document.createElement('div');
+      d.className = 'divider';
+      d.id = 'read-divider';
+      d.textContent = '—— 上次看到这里 · 以下是新消息 ——';
+      frag.appendChild(d);
+    }
     if (oldestId === null || m.id < oldestId) oldestId = m.id;
   }
   sentinel.after(frag);
@@ -225,6 +265,35 @@ const io = new IntersectionObserver((entries) => {
 }, { rootMargin: '200px' });
 io.observe(sentinel);
 
+async function pollGaps() {
+  try {
+    const d = await (await fetch('/api/gaps')).json();
+    const bar = document.getElementById('gaps-bar');
+    // 吸顶：标注条贴在 header 正下方，滚动时不消失
+    const header = document.querySelector('header');
+    if (header) bar.style.top = header.offsetHeight + 'px';
+    const gaps = d.gaps || [];
+    if (!gaps.length) { bar.style.display = 'none'; bar.innerHTML = ''; return; }
+    const items = gaps.map(g => {
+      const start = fmtTime(g.start_ts);
+      const end = g.end_ts ? fmtTime(g.end_ts) : '现在（休眠中）';
+      return `<div class="gap-item">⏸ 工具休眠 ${start} ~ ${end}，期间消息未采集</div>`;
+    }).join('');
+    bar.style.display = 'block';
+    bar.innerHTML = items +
+      `<div class="gap-item"><button id="backfill-btn" title="拉取一次微博历史，把缺口消息补回（会清一次手机端角标）">手动补漏</button></div>`;
+    document.getElementById('backfill-btn').addEventListener('click', async (ev) => {
+      const btn = ev.target;
+      btn.disabled = true; btn.textContent = '补漏中…';
+      try {
+        const r = await fetch('/api/backfill', { method: 'POST' });
+        const d = await r.json();
+        if (!d.ok && d.msg) { btn.textContent = '已在进行'; }
+      } catch (e) { btn.textContent = '失败，稍后重试'; btn.disabled = false; }
+    });
+  } catch (e) {}
+}
+
 async function pollState() {
   try {
     const s = await (await fetch('/api/state')).json();
@@ -234,10 +303,68 @@ async function pollState() {
                   expired: '钥匙过期，需重新扫码', stopped: '已停止' };
     statusText.textContent = map[s.status] || s.status || '未知';
     if (s.stored_total) countEl.textContent = `共 ${s.stored_total} 条`;
+    if (s.unread != null) { unread = s.unread; updateBadge(); }
+    if (s.last_read_id != null) lastReadId = s.last_read_id;
   } catch (e) { statusText.textContent = '服务未响应'; }
 }
 setInterval(pollState, 5000);
+setInterval(pollGaps, 10000);
 pollState();
+pollGaps();
+
+const badgeEl = document.getElementById('unread-badge');
+const unreadN = document.getElementById('unread-n');
+
+function updateBadge() {
+  badgeEl.hidden = unread <= 0;
+  unreadN.textContent = unread;
+}
+
+// 上报已读：视野内最新一条消息的 ID（防抖）
+let readTimer = null;
+function reportRead(id) {
+  if (!id || (lastReadId && id <= lastReadId)) return;
+  clearTimeout(readTimer);
+  readTimer = setTimeout(async () => {
+    try {
+      const r = await fetch('/api/read', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id }),
+      });
+      const d = await r.json();
+      if (d.unread != null) { unread = d.unread; lastReadId = id; updateBadge(); }
+    } catch (e) {}
+  }, 400);
+}
+
+// 滚动即已读：向上翻历史/向下看新消息，视野内最新一条上报
+let scrollTimer = null;
+window.addEventListener('scroll', () => {
+  clearTimeout(scrollTimer);
+  scrollTimer = setTimeout(() => {
+    let maxVisible = 0;
+    for (const el of feed.querySelectorAll('.msg')) {
+      const r = el.getBoundingClientRect();
+      if (r.top < window.innerHeight && r.bottom > 0) {
+        const id = Number(el.dataset.id || 0);
+        if (id > maxVisible) maxVisible = id;
+      }
+    }
+    if (maxVisible) reportRead(maxVisible);
+  }, 150);
+}, { passive: true });
+
+// 点击角标 → 跳到最早待读处（分割线）
+badgeEl.addEventListener('click', async () => {
+  let div = document.getElementById('read-divider');
+  while (!div && oldestId !== 'done') {
+    await loadOlder();
+    div = document.getElementById('read-divider');
+  }
+  if (div) div.scrollIntoView({ block: 'start' });
+  else if (oldestId === 'done') window.scrollTo({ top: 0 });
+});
 
 async function loadEmojis() {
   try { emojiMap = await (await fetch('/api/emojis')).json(); } catch (e) {}
@@ -247,14 +374,28 @@ loadEmojis();
 const es = new EventSource('/api/stream');
 es.onmessage = (ev) => {
   const m = JSON.parse(ev.data);
+  // 控制类事件：补漏完成 → 提示并刷新
+  if (m.type === 'backfill_done') {
+    const bar = document.getElementById('gaps-bar');
+    bar.style.display = 'block';
+    bar.innerHTML = `<div class="gap-item">✅ 补漏完成，新增 ${m.inserted} 条${m.complete ? '' : '（缺口过深，可能未补全）'}，正在刷新…</div>`;
+    setTimeout(() => location.reload(), 1500);
+    return;
+  }
   if (seen.has(m.id)) return;
   seen.add(m.id);
   const nearBottom = window.innerHeight + window.scrollY >= document.body.scrollHeight - 300;
   feed.appendChild(makeNode(m));
-  if (nearBottom) window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
+  if (nearBottom) {
+    window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
+    reportRead(m.id);  // 停在底部时新消息即计已读
+  }
 };
 
-loadOlder();
+(async () => {
+  await pollState();      // 先拿已读锚点 → 首次渲染才能画出分割线
+  await loadOlder();
+})();
 </script>
 </body>
 </html>

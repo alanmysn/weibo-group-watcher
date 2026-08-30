@@ -54,6 +54,14 @@ def start(cfg, stop_event=None):
     """
     backoff = 2
     runtime_state.set_status("reconnecting", "启动中")
+    # 进程级停机兜底：上次在线时刻与本次启动间隔过大 → 补记缺口
+    # （进程被 kill/关机时来不及记缺口开始，靠这里事后认账）
+    last_online = store.get_meta("last_online_at")
+    if last_online:
+        gap_secs = int(time.time()) - int(last_online)
+        if gap_secs > 120:
+            log.info("检测到停机缺口 %.1f 分钟，面板将标注", gap_secs / 60)
+            store.open_gap(int(last_online))
     while True:
         try:
             _run_session(cfg, stop_event)
@@ -62,9 +70,11 @@ def start(cfg, stop_event=None):
         except SessionExpired as e:
             log.warning("会话被服务器作废（%s），%d 秒后重新握手", e, backoff)
             runtime_state.set_status("reconnecting", f"会话失效: {e}")
+            store.open_gap(int(time.time()))  # 记缺口开始（不自动拉取，面板标注）
         except (websocket.WebSocketException, OSError) as e:
             log.warning("连接异常断开（%s），%d 秒后重连", e, backoff)
             runtime_state.set_status("reconnecting", f"连接断开: {e}")
+            store.open_gap(int(time.time()))
         if stop_event is not None and stop_event.is_set():
             runtime_state.set_status("stopped")
             return
@@ -140,6 +150,8 @@ def _run_session(cfg, stop_event=None):
                 activated = True  # 回执已到 → 立即进入正式循环
                 break
     log.info("长轮询循环已激活")
+    store.close_gap(int(time.time()))  # 重连成功：闭合缺口（若有）
+    store.set_meta("last_online_at", int(time.time()))  # 记录在线时刻
     runtime_state.set_status("online", "实时监听中")
 
     # ④ 普通 connect 循环：服务器捏住 ~170 秒 → 回复 → 立即发下一个。
@@ -222,7 +234,9 @@ def _store_message(info, gid):
             runtime_state.touch_message()
             try:
                 import web
-                web.broadcast({"id": info.get("id"), "from_name": name,
+                web.broadcast({"id": info.get("id"),
+                               "from_uid": str(info.get("from_uid", "")),
+                               "from_name": name,
                                "content": info.get("content", ""),
                                "type": info.get("type"),
                                "media_type": info.get("media_type", 0),

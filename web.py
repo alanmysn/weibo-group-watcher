@@ -121,12 +121,76 @@ def api_stream():
 @app.route("/api/state")
 def api_state():
     s = runtime_state.snapshot()
+    s["unread"] = store.count_unread()
+    s["last_read_id"] = store.get_last_read_id()
+    s["latest_id"] = store.get_max_msg_id()
+    # 总数实时查库（meta 里的 stored_total 是补漏时快照，会过期）
+    conn = store.get_conn()
+    try:
+        s["stored_total"] = conn.execute(
+            "SELECT COUNT(*) FROM messages").fetchone()[0]
+    finally:
+        conn.close()
     return jsonify(s)
+
+
+@app.route("/api/read", methods=["POST"])
+def api_read():
+    """面板上报：用户视野扫过某条消息 → 推进已读锚点（只前进不倒退）。"""
+    data = request.get_json(silent=True) or {}
+    mid = data.get("id")
+    if not mid:
+        abort(400)
+    cur = store.get_last_read_id()
+    if cur is None or mid > cur:
+        store.set_last_read_id(mid)
+    return jsonify({"ok": True, "unread": store.count_unread()})
+
+
+@app.route("/api/gaps")
+def api_gaps():
+    """缺口账本（休眠/断线时段，面板如实标注）。"""
+    return jsonify({"gaps": store.list_gaps()})
+
+
+_backfilling = threading.Event()
+
+
+@app.route("/api/backfill", methods=["POST"])
+def api_backfill():
+    """手动补漏：用户点击面板按钮触发（后台线程，防重入）。
+
+    补漏=拉取=会把微博已读位置推到最新（手机端角标清一次）——
+    这是用户已知的取舍，故只由手动触发，绝不自动。
+    """
+    if _backfilling.is_set():
+        return jsonify({"ok": False, "msg": "补漏进行中"}), 409
+    _backfilling.set()
+    cfg = app.config["CFG"]
+
+    def worker():
+        import backfill
+        try:
+            inserted, complete = backfill.backfill_once(cfg)
+            if complete:
+                store.clear_closed_gaps()  # 缺口已填平，标注消失
+            broadcast({"type": "backfill_done", "inserted": inserted,
+                       "complete": complete})
+        except Exception as e:
+            log.warning("手动补漏失败: %s", e)
+            broadcast({"type": "backfill_done", "inserted": 0,
+                       "complete": False, "error": str(e)})
+        finally:
+            _backfilling.clear()
+
+    threading.Thread(target=worker, daemon=True).start()
+    return jsonify({"ok": True})
 
 
 def start(cfg, host="127.0.0.1", port=8765):
     """在后台线程启动面板服务（主线程留给采集器）。"""
     app.config["COOKIE_PATH"] = cfg["cookie_path"]
+    app.config["CFG"] = cfg
     os.makedirs(AVATAR_DIR, exist_ok=True)
     os.makedirs(EMOJI_DIR, exist_ok=True)
     t = threading.Thread(

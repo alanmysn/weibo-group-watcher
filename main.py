@@ -41,9 +41,6 @@ def cmd_init(_args):
 
 
 def cmd_run(_args):
-    import threading
-
-    import backfill
     import collector
     import web
 
@@ -52,22 +49,13 @@ def cmd_run(_args):
     log = logging.getLogger("watcher")
     log.info("采集器启动（群：%s）", config.masked_group_label())
 
-    # 开工先补漏对账（收回睡眠/断网/被踢窗口的漏网消息），再进长连接
-    try:
-        backfill.backfill_once(cfg)
-    except Exception as e:
-        log.warning("启动补漏失败（%s）——长连接照常先行", e)
-
     # 面板服务（后台线程，仅本机）
     web.start(cfg)
 
-    # 常态对账保险丝：每小时一次（后台线程）
-    stop_event = threading.Event()
-    t = threading.Thread(target=backfill.start_periodic,
-                         args=(cfg, stop_event), daemon=True)
-    t.start()
-
-    collector.start(cfg, stop_event)
+    # 长连接采集（只收不拉——拉取会推进微博已读位置、清掉手机端角标，
+    # 已由 2026-08-30 对照实验实锤；缺口不自动补，面板如实标注，
+    # 由用户手动触发补漏，见 web /api/backfill）
+    collector.start(cfg)
 
 
 def main():
