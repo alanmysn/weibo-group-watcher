@@ -74,6 +74,11 @@ def _row_to_dict(row):
     return dict(zip(MSG_FIELDS, row))
 
 
+def _like_pattern(text):
+    text = text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return f"%{text}%"
+
+
 @app.route("/")
 def index():
     with open("panel.html", encoding="utf-8") as f:
@@ -96,19 +101,30 @@ def gaps_page():
 def api_messages():
     before = request.args.get("before", type=int)
     limit = min(request.args.get("limit", 50, type=int), 200)
+    query = request.args.get("q", "").strip()[:100]
+    uid = request.args.get("uid", "").strip()
+    if uid and not re.fullmatch(r"\d+", uid):
+        abort(400)
+    conditions = []
+    params = []
+    if before:
+        conditions.append("m.id < ?")
+        params.append(before)
+    if query:
+        conditions.append("COALESCE(m.content, '') LIKE ? ESCAPE '\\'")
+        params.append(_like_pattern(query))
+    if uid:
+        conditions.append("m.from_uid = ?")
+        params.append(uid)
+    where = " WHERE " + " AND ".join(conditions) if conditions else ""
+    params.append(limit)
     conn = store.get_conn()
     try:
-        if before:
-            rows = conn.execute(
-                f"SELECT {MSG_SELECT} FROM messages m "
-                "LEFT JOIN attachments a ON a.msg_id=m.id "
-                "WHERE m.id < ? ORDER BY m.id DESC LIMIT ?",
-                (before, limit)).fetchall()
-        else:
-            rows = conn.execute(
-                f"SELECT {MSG_SELECT} FROM messages m "
-                "LEFT JOIN attachments a ON a.msg_id=m.id "
-                "ORDER BY m.id DESC LIMIT ?", (limit,)).fetchall()
+        rows = conn.execute(
+            f"SELECT {MSG_SELECT} FROM messages m "
+            "LEFT JOIN attachments a ON a.msg_id=m.id"
+            f"{where} ORDER BY m.id DESC LIMIT ?", params
+        ).fetchall()
     finally:
         conn.close()
     msgs = [_row_to_dict(r) for r in rows]

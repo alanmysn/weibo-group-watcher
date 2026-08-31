@@ -30,6 +30,33 @@
   #count { margin-left: auto; color: var(--muted); font-size: 13px; }
   .header-link { color: var(--muted); font-size: 13px; text-decoration: none; }
   .header-link:hover { color: var(--text); }
+  button.header-link { border: 0; background: transparent; font-family: inherit; cursor: pointer; }
+  #search-toggle {
+    position: absolute; left: 50%; transform: translateX(-50%);
+  }
+  #search-panel {
+    position: sticky; z-index: 8; padding: 8px;
+    background: rgba(244,245,247,.96); border-bottom: 1px solid var(--border);
+  }
+  #search-panel[hidden] { display: none; }
+  #search-form { display: flex; gap: 7px; max-width: 664px; margin: 0 auto; }
+  #search-input {
+    min-width: 0; flex: 1; padding: 8px 11px; border: 1px solid var(--border);
+    border-radius: 9px; background: var(--card); color: var(--text);
+    font: inherit; outline: none;
+  }
+  #search-input:focus { border-color: var(--accent); }
+  #search-form button {
+    flex: none; padding: 7px 12px; border: 1px solid var(--border);
+    border-radius: 9px; background: var(--card); color: var(--text);
+    font: inherit; cursor: pointer;
+  }
+  #search-form button[type="submit"] {
+    border-color: var(--accent); background: var(--accent); color: #fff;
+  }
+  #search-summary {
+    max-width: 664px; margin: 6px auto 0; color: var(--muted); font-size: 13px;
+  }
   main { max-width: 680px; margin: 0 auto; padding: 10px 8px 40px; }
   .msg {
     display: flex; gap: 10px; margin-bottom: 8px; padding: 12px 12px 14px;
@@ -49,7 +76,11 @@
   }
   .body { min-width: 0; flex: 1; }
   .name-row { display: flex; align-items: baseline; gap: 8px; }
-  .name { font-weight: 700; }
+  .name {
+    border: 0; padding: 0; background: transparent; color: inherit;
+    font: inherit; font-weight: 700; cursor: pointer;
+  }
+  .name:hover { color: var(--accent); }
   .time { color: var(--muted); font-size: 12.5px; }
   .content { margin-top: 2px; white-space: pre-wrap; word-break: break-word; }
   .content a { color: var(--accent); text-decoration: none; }
@@ -129,11 +160,20 @@
 <header>
   <span id="dot"></span><span id="status-text">连接中…</span>
   <button id="unread-badge" hidden title="跳到最早待读处">待读 0</button>
+  <button id="search-toggle" class="header-link" type="button" aria-expanded="false">搜索</button>
   <span id="count"></span>
   <a class="header-link" href="/gaps" target="_blank">遗漏记录</a>
   <a class="header-link" href="/settings" target="_blank">特别关注</a>
 </header>
 <div id="gaps-bar"></div>
+<section id="search-panel" hidden>
+  <form id="search-form">
+    <input id="search-input" type="search" maxlength="100" placeholder="搜索消息" aria-label="搜索消息">
+    <button type="submit">搜索</button>
+    <button id="clear-search" type="button" hidden>返回</button>
+  </form>
+  <div id="search-summary" hidden></div>
+</section>
 <main id="feed">
   <div class="sentinel" id="sentinel"></div>
 </main>
@@ -144,6 +184,14 @@ const sentinel = document.getElementById('sentinel');
 const dot = document.getElementById('dot');
 const statusText = document.getElementById('status-text');
 const countEl = document.getElementById('count');
+const searchForm = document.getElementById('search-form');
+const searchInput = document.getElementById('search-input');
+const clearSearchButton = document.getElementById('clear-search');
+const searchSummary = document.getElementById('search-summary');
+const searchPanel = document.getElementById('search-panel');
+const searchToggle = document.getElementById('search-toggle');
+const headerEl = document.querySelector('header');
+const gapsBar = document.getElementById('gaps-bar');
 
 let oldestId = null;
 let loading = false;
@@ -158,6 +206,30 @@ let initialLoadDone = false;
 let specialUids = new Set();
 let attentionMode = false;
 let specialQueue = [];
+let searchQuery = '';
+let filterUid = '';
+let filterName = '';
+let viewVersion = 0;
+
+function isSearchMode() {
+  return Boolean(searchQuery || filterUid);
+}
+
+function updateStickyOffsets() {
+  gapsBar.style.top = `${headerEl.offsetHeight}px`;
+  const gapHeight = gapsBar.offsetParent ? gapsBar.offsetHeight : 0;
+  searchPanel.style.top = `${headerEl.offsetHeight + gapHeight}px`;
+}
+
+function setSearchPanel(open) {
+  searchPanel.hidden = !open;
+  searchToggle.setAttribute('aria-expanded', String(open));
+  requestAnimationFrame(updateStickyOffsets);
+  if (open) searchInput.focus();
+}
+
+searchToggle.addEventListener('click', () => setSearchPanel(searchPanel.hidden));
+window.addEventListener('resize', updateStickyOffsets);
 
 function esc(s) {
   const d = document.createElement('div');
@@ -270,7 +342,7 @@ function makeNode(m) {
     return div;
   }
   const name = m.from_name || '未知';
-  let inner = `<div class="name-row"><span class="name">${esc(name)}</span>` +
+  let inner = `<div class="name-row"><button class="name" type="button">${esc(name)}</button>` +
               `<span class="time">${fmtTime(m.time)}</span></div>`;
   if (m.recall_status) {
     inner += `<div class="content recall">↩︎ ${renderEmoji(m.content)}（已撤回）</div>`;
@@ -322,28 +394,37 @@ function prependBatch(msgs) {
     if (oldestId === null || m.id < oldestId) oldestId = m.id;
   }
   sentinel.after(frag);
-  if (firstUnreadId) placeDividerBefore(firstUnreadId);
+  if (firstUnreadId && !isSearchMode()) placeDividerBefore(firstUnreadId);
 }
 
 async function loadOlder() {
   if (loading) return;
   loading = true;
+  const version = viewVersion;
+  let keepTip = false;
   const tip = document.createElement('div');
   tip.className = 'loading'; tip.textContent = '加载中…';
   feed.appendChild(tip);
   try {
-    const url = oldestId ? `/api/messages?before=${oldestId}&limit=50` : '/api/messages?limit=50';
+    const params = new URLSearchParams({ limit: '50' });
+    if (oldestId) params.set('before', oldestId);
+    if (searchQuery) params.set('q', searchQuery);
+    if (filterUid) params.set('uid', filterUid);
+    const url = `/api/messages?${params}`;
     const data = await (await fetch(url)).json();
+    if (version !== viewVersion) return;
     tip.remove();
     if (!data.messages.length && oldestId === null) {
-      tip.textContent = '还没有消息，等第一条进来说话';
+      tip.textContent = isSearchMode() ? '没有找到匹配消息' : '还没有消息，等第一条进来说话';
       feed.appendChild(tip);
+      keepTip = true;
       return;
     }
     prependBatch(data.messages);
     if (!data.has_more && oldestId !== null) {
       const end = document.createElement('div');
-      end.className = 'loading'; end.textContent = '—— 已经到最初的消息 ——';
+      end.className = 'loading';
+      end.textContent = isSearchMode() ? '—— 已显示全部匹配消息 ——' : '—— 已经到最初的消息 ——';
       sentinel.after(end);
       oldestId = 'done';
     }
@@ -351,7 +432,7 @@ async function loadOlder() {
     tip.textContent = '加载失败，稍后自动重试';
     setTimeout(() => { tip.remove(); loadOlder(); }, 3000);
   } finally {
-    if (tip.parentNode) tip.remove();
+    if (!keepTip && tip.parentNode) tip.remove();
     loading = false;
   }
 }
@@ -366,23 +447,25 @@ io.observe(sentinel);
 async function pollGaps() {
   try {
     const d = await (await fetch('/api/gaps')).json();
-    const bar = document.getElementById('gaps-bar');
-    // 吸顶：标注条贴在 header 正下方，滚动时不消失
-    const header = document.querySelector('header');
-    if (header) bar.style.top = header.offsetHeight + 'px';
     const gap = d.latest;
     if (!gap) {
-      bar.style.display = 'none'; bar.innerHTML = ''; return;
+      gapsBar.style.display = 'none'; gapsBar.innerHTML = '';
+      updateStickyOffsets();
+      return;
     }
     const start = fmtTime(gap.start_ts);
     const end = gap.end_ts ? fmtTime(gap.end_ts) : '现在（休眠中）';
-    bar.style.display = 'block';
-    bar.innerHTML = `<button class="gap-close" title="关闭这条提醒" aria-label="关闭这条提醒">×</button>` +
+    gapsBar.style.display = 'block';
+    gapsBar.innerHTML = `<button class="gap-close" title="关闭这条提醒" aria-label="关闭这条提醒">×</button>` +
       `<div class="gap-item">⏸ 工具休眠 ${start} ~ ${end}，期间消息未采集</div>`;
-    bar.querySelector('.gap-close').addEventListener('click', async () => {
+    updateStickyOffsets();
+    gapsBar.querySelector('.gap-close').addEventListener('click', async () => {
       try {
         const r = await fetch(`/api/gaps/${gap.id}/dismiss`, { method: 'POST' });
-        if (r.ok) { bar.style.display = 'none'; bar.innerHTML = ''; }
+        if (r.ok) {
+          gapsBar.style.display = 'none'; gapsBar.innerHTML = '';
+          updateStickyOffsets();
+        }
       } catch (e) {}
     });
   } catch (e) {}
@@ -410,6 +493,10 @@ pollGaps();
 const badgeEl = document.getElementById('unread-badge');
 
 function updateBadge() {
+  if (isSearchMode()) {
+    badgeEl.hidden = true;
+    return;
+  }
   const n = attentionMode ? specialQueue.length : unread;
   badgeEl.hidden = n <= 0;
   badgeEl.classList.toggle('special', attentionMode);
@@ -443,7 +530,7 @@ async function loadSpecialUsers() {
 // 上报已读：视野内最新一条消息的 ID（防抖）
 let readTimer = null;
 function reportRead(id) {
-  if (initialPositioning || jumpingToUnread || !id
+  if (isSearchMode() || initialPositioning || jumpingToUnread || !id
       || (lastReadId && id <= lastReadId)) return;
   clearTimeout(readTimer);
   readTimer = setTimeout(async () => {
@@ -537,6 +624,51 @@ async function loadEmojis() {
 loadEmojis();
 setInterval(loadSpecialUsers, 30000);
 
+async function showFilteredMessages() {
+  setSearchPanel(true);
+  viewVersion += 1;
+  while (loading) {
+    await new Promise(resolve => setTimeout(resolve, 50));
+  }
+  for (const el of [...feed.children]) {
+    if (el !== sentinel) el.remove();
+  }
+  seen.clear();
+  oldestId = null;
+  searchSummary.hidden = false;
+  searchSummary.textContent = [
+    searchQuery ? `关键词：${searchQuery}` : '',
+    filterUid ? `发言人：${filterName || filterUid}` : '',
+  ].filter(Boolean).join(' · ');
+  clearSearchButton.hidden = false;
+  updateBadge();
+  await loadOlder();
+  window.scrollTo({ top: document.documentElement.scrollHeight });
+}
+
+searchForm.addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const query = searchInput.value.trim();
+  if (!query) return;
+  searchQuery = query;
+  filterUid = '';
+  filterName = '';
+  await showFilteredMessages();
+});
+
+feed.addEventListener('click', async (event) => {
+  const button = event.target.closest('.name');
+  const message = button && button.closest('.msg');
+  if (!message || !message.dataset.uid) return;
+  searchQuery = '';
+  searchInput.value = '';
+  filterUid = message.dataset.uid;
+  filterName = button.textContent;
+  await showFilteredMessages();
+});
+
+clearSearchButton.addEventListener('click', () => location.reload());
+
 const es = new EventSource('/api/stream');
 es.onmessage = (ev) => {
   const m = JSON.parse(ev.data);
@@ -548,6 +680,7 @@ es.onmessage = (ev) => {
     setTimeout(() => location.reload(), 1500);
     return;
   }
+  if (isSearchMode()) return;
   if (seen.has(m.id)) return;
   seen.add(m.id);
   const nearBottom = window.innerHeight + window.scrollY >= document.body.scrollHeight - 300;
