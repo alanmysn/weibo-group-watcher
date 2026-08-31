@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>特别关注设置</title>
+<style>
+  :root { --bg:#f4f5f7; --card:#fff; --text:#1c1e21; --muted:#8a8f98; --border:#e4e6ea; --gold:#d99000; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font-family:-apple-system,"Segoe UI","Microsoft YaHei",sans-serif; }
+  header { position:sticky; top:0; padding:14px 16px; background:rgba(255,255,255,.96); border-bottom:1px solid var(--border); }
+  h1 { margin:0; font-size:18px; }
+  header p { margin:4px 0 0; color:var(--muted); font-size:13px; }
+  main { max-width:680px; margin:0 auto; padding:8px 0 30px; }
+  .user { display:flex; align-items:center; gap:10px; padding:10px 14px; background:var(--card); border-bottom:1px solid var(--border); }
+  .avatar { width:40px; height:40px; border-radius:50%; background:#e8edf2; object-fit:cover; }
+  .name { flex:1; min-width:0; font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  button { width:38px; height:38px; border:0; border-radius:50%; background:#eef1f4; color:#a5abb3; font-size:23px; cursor:pointer; }
+  button.on { background:#fff3cf; color:var(--gold); }
+  .empty { padding:30px; text-align:center; color:var(--muted); }
+</style>
+</head>
+<body>
+<header>
+  <h1>特别关注</h1>
+  <p>按用户 UID 识别，改昵称后仍是同一个人。</p>
+</header>
+<main id="users"><div class="empty">加载中…</div></main>
+<script>
+const usersEl = document.getElementById('users');
+
+function esc(s) {
+  const d = document.createElement('div');
+  d.textContent = s ?? '';
+  return d.innerHTML;
+}
+
+async function loadUsers() {
+  try {
+    const data = await (await fetch('/api/special-users')).json();
+    if (!data.users.length) {
+      usersEl.innerHTML = '<div class="empty">还没有可设置的发言人</div>';
+      return;
+    }
+    usersEl.innerHTML = data.users.map(u =>
+      `<div class="user"><img class="avatar" src="/api/avatar/${encodeURIComponent(u.uid)}" onerror="this.style.visibility='hidden'">` +
+      `<div class="name">${esc(u.name || '未知')}</div>` +
+      `<button class="${u.special ? 'on' : ''}" data-uid="${esc(u.uid)}" data-on="${u.special ? '1' : '0'}" title="${u.special ? '取消特别关注' : '设为特别关注'}">★</button></div>`
+    ).join('');
+  } catch (e) {
+    usersEl.innerHTML = '<div class="empty">加载失败，请稍后刷新</div>';
+  }
+}
+
+usersEl.addEventListener('click', async (ev) => {
+  const btn = ev.target.closest('button[data-uid]');
+  if (!btn) return;
+  const enabled = btn.dataset.on !== '1';
+  btn.disabled = true;
+  try {
+    const r = await fetch('/api/special-users', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({uid:btn.dataset.uid, enabled}),
+    });
+    if (!r.ok) throw new Error('save failed');
+    btn.dataset.on = enabled ? '1' : '0';
+    btn.classList.toggle('on', enabled);
+    btn.title = enabled ? '取消特别关注' : '设为特别关注';
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+loadUsers();
+</script>
+</body>
+</html>

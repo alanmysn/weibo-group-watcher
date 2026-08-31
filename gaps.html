@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>遗漏记录</title>
+<style>
+  :root { --bg:#f4f5f7; --card:#fff; --text:#1c1e21; --muted:#8a8f98; --border:#e4e6ea; --warn:#9a6b00; --ok:#238636; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font-family:-apple-system,"Segoe UI","Microsoft YaHei",sans-serif; }
+  header { position:sticky; top:0; z-index:2; padding:14px 16px; background:rgba(255,255,255,.96); border-bottom:1px solid var(--border); }
+  h1 { margin:0; font-size:18px; }
+  header p { margin:4px 0 0; color:var(--muted); font-size:13px; }
+  main { max-width:680px; margin:0 auto; padding:8px 0 30px; }
+  #result { display:none; margin:8px 14px; padding:9px 12px; border-radius:8px; background:#fff7e0; color:var(--warn); font-size:13px; }
+  .gap { display:flex; align-items:center; gap:12px; padding:12px 14px; background:var(--card); border-bottom:1px solid var(--border); }
+  .detail { flex:1; min-width:0; }
+  .period { font-weight:600; }
+  .meta { margin-top:4px; color:var(--muted); font-size:12.5px; }
+  .state { color:var(--warn); }
+  .state.done { color:var(--ok); }
+  button { flex:none; border:1px solid #d8ad38; border-radius:7px; padding:6px 10px; background:#fff; color:#805d00; font-family:inherit; cursor:pointer; }
+  button:disabled { opacity:.55; cursor:wait; }
+  .empty { padding:30px; text-align:center; color:var(--muted); }
+</style>
+</head>
+<body>
+<header>
+  <h1>遗漏记录</h1>
+  <p>显示最近 7 天。点击较早记录，会连同它之后尚未补漏的记录一起处理。</p>
+</header>
+<main>
+  <div id="result"></div>
+  <div id="gaps"><div class="empty">加载中…</div></div>
+</main>
+<script>
+const gapsEl = document.getElementById('gaps');
+const resultEl = document.getElementById('result');
+let working = false;
+let receivedResult = false;
+
+function fmtDate(ts) {
+  if (!ts) return '现在（休眠中）';
+  const d = new Date(ts * 1000);
+  const p = n => String(n).padStart(2, '0');
+  return `${d.getMonth()+1}/${d.getDate()} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
+function duration(start, end) {
+  const seconds = Math.max(0, (end || Date.now()/1000) - start);
+  if (seconds < 3600) return `${Math.max(1, Math.round(seconds/60))} 分钟`;
+  const hours = Math.floor(seconds/3600);
+  const minutes = Math.round((seconds-hours*3600)/60);
+  return minutes ? `${hours} 小时 ${minutes} 分钟` : `${hours} 小时`;
+}
+
+function showResult(text) {
+  resultEl.textContent = text;
+  resultEl.style.display = 'block';
+}
+
+async function waitForBackfill() {
+  while (working) {
+    await new Promise(resolve => setTimeout(resolve, 1000));
+    try {
+      const data = await (await fetch('/api/backfill-state')).json();
+      if (!data.running) {
+        working = false;
+        if (!receivedResult) showResult('补漏已结束，请查看各条记录的状态。');
+        await loadGaps();
+      }
+    } catch (e) {}
+  }
+}
+
+async function loadGaps() {
+  try {
+    const data = await (await fetch('/api/gaps?days=7')).json();
+    const gaps = data.gaps || [];
+    if (!gaps.length) {
+      gapsEl.innerHTML = '<div class="empty">最近 7 天没有遗漏记录</div>';
+      return;
+    }
+    gapsEl.innerHTML = gaps.map(g => {
+      let state = '未补漏';
+      let stateClass = 'state';
+      if (!g.end_ts) state = '尚未结束';
+      if (g.filled_at) { state = '已补漏'; stateClass += ' done'; }
+      const dismissed = g.dismissed_at && !g.filled_at ? ' · 首页提醒已关闭' : '';
+      const button = g.end_ts && !g.filled_at
+        ? `<button data-gap-id="${g.id}" ${working ? 'disabled' : ''}>补漏至此</button>` : '';
+      return `<div class="gap"><div class="detail">` +
+        `<div class="period">${fmtDate(g.start_ts)} ～ ${fmtDate(g.end_ts)}</div>` +
+        `<div class="meta">持续 ${duration(g.start_ts, g.end_ts)} · <span class="${stateClass}">${state}</span>${dismissed}</div>` +
+        `</div>${button}</div>`;
+    }).join('');
+  } catch (e) {
+    gapsEl.innerHTML = '<div class="empty">加载失败，请稍后刷新</div>';
+  }
+}
+
+gapsEl.addEventListener('click', async ev => {
+  const btn = ev.target.closest('button[data-gap-id]');
+  if (!btn || working) return;
+  if (!confirm('补漏会请求微博历史消息，并清除手机端该群的未读角标。是否继续？')) return;
+  working = true;
+  btn.disabled = true;
+  btn.textContent = '补漏中…';
+  try {
+    const r = await fetch('/api/backfill', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({gap_id:Number(btn.dataset.gapId)}),
+    });
+    const data = await r.json();
+    if (!r.ok || !data.ok) {
+      working = false;
+      showResult(data.msg || '补漏启动失败');
+      await loadGaps();
+    } else {
+      receivedResult = false;
+      waitForBackfill();
+    }
+  } catch (e) {
+    working = false;
+    showResult('补漏启动失败，请稍后重试');
+    await loadGaps();
+  }
+});
+
+const es = new EventSource('/api/stream');
+es.onmessage = async ev => {
+  const data = JSON.parse(ev.data);
+  if (data.type !== 'backfill_done') return;
+  receivedResult = true;
+  working = false;
+  if (data.complete) {
+    showResult(`补漏完成，新增 ${data.inserted} 条消息。`);
+  } else {
+    showResult(`补漏未完成，新增 ${data.inserted} 条消息。${data.error || ''}`);
+  }
+  await loadGaps();
+};
+
+loadGaps();
+</script>
+</body>
+</html>

@@ -1,9 +1,10 @@
 """补漏模块：断线/停机/被踢窗口期间漏掉的消息，用历史接口对账补齐。
 
 策略（03-方案设计.md §6.2）：
-- 锚点 = 库内最新消息 ID；从服务器最新一页往回翻，翻到锚点为止；
-- 只收录"比锚点新"的消息（anchor_lookback 天然排除旧消息与重复）；
-- 三保险：页间隔 0.5s / 单次上限 2000 条 / 超限标注不静默丢弃。
+- 每个缺口用「缺口后第一条本地消息」作为向前翻页游标；
+- 翻到「缺口前最后一条本地消息」即停止，只写入两锚点之间的消息；
+- 点击较早缺口时，依次处理它及其后更新的全部未补缺口；
+- 三保险：页间隔 0.5s / 单次最多扫描 2000 条 / 未到锚点不标成功。
 """
 import json
 import logging
@@ -39,24 +40,70 @@ def _headers(cookie_path):
     }
 
 
-def backfill_once(cfg):
-    """补漏一轮。返回 (新入库条数, 是否补全)。Cookie 失效抛 SessionExpired。"""
+def backfill_to_gap(cfg, target_gap_id):
+    """补到目标缺口；同时处理它之后更新的未补缺口。"""
+    gaps = store.list_unfilled_closed_gaps_from(target_gap_id)
+    if not gaps:
+        raise ValueError("所选缺口不存在、尚未结束或已经补漏")
+
     gid = str(cfg["group_id"])
-    anchor_id = store.get_max_msg_id()
-    if anchor_id is None:
-        log.info("库为空（首启），不回溯历史，从现在开始积累")
-        return 0, True
-
     headers = _headers(cfg["cookie_path"])
-    max_mid = 0          # 0 = 从最新开始
-    inserted = 0
-    hit_anchor = False
+    total_inserted = 0
+    total_scanned = 0
+    filled_ids = []
+    error = ""
 
-    while inserted < MAX_PER_RUN and not hit_anchor:
+    for gap in gaps:
+        before_id, after_id = store.get_gap_anchors(
+            gap["start_ts"], gap["end_ts"]
+        )
+        if before_id is None:
+            error = "缺口前没有本地消息，无法确定停止位置"
+            break
+        remaining = MAX_PER_RUN - total_scanned
+        if remaining <= 0:
+            error = f"达到单次 {MAX_PER_RUN} 条扫描上限"
+            break
+        inserted, scanned, complete, reason = _backfill_range(
+            gid, headers, before_id, after_id, remaining
+        )
+        total_inserted += inserted
+        total_scanned += scanned
+        if not complete:
+            error = reason
+            break
+        store.mark_gap_filled(gap["id"], int(time.time()))
+        filled_ids.append(gap["id"])
+
+    runtime_state.touch_backfill(_count_total())
+    complete = len(filled_ids) == len(gaps)
+    if complete:
+        log.info("补漏完成：处理 %d 个缺口，新增 %d 条消息",
+                 len(filled_ids), total_inserted)
+    else:
+        log.warning("补漏未完成：已处理 %d 个缺口，%s",
+                    len(filled_ids), error)
+    return {"inserted": total_inserted, "scanned": total_scanned,
+            "filled_ids": filled_ids, "complete": complete,
+            "error": error}
+
+
+def _backfill_range(gid, headers, before_id, after_id, scan_limit):
+    """从缺口后锚点向前翻到缺口前锚点。"""
+    before_id = int(before_id)
+    after_id = int(after_id) if after_id is not None else None
+    if after_id is not None and after_id <= before_id:
+        return 0, 0, False, "缺口前后锚点顺序异常"
+
+    max_mid = after_id or 0
+    inserted = 0
+    scanned = 0
+    while scanned < scan_limit:
+        page_count = min(PAGE_SIZE, scan_limit - scanned)
         resp = requests.get(
             API_URL,
             params={"convert_emoji": 1, "query_sender": 1,
-                    "count": PAGE_SIZE, "id": gid,
+                    "count": page_count, "id": gid,
                     "max_mid": max_mid, "source": SOURCE},
             headers=headers, timeout=20,
         )
@@ -64,36 +111,30 @@ def backfill_once(cfg):
         if "error" in data:
             if data.get("error_code") == 100000:  # 约定：登录态失效
                 from collector import SessionExpired
-                raise SessionExpired(f"历史接口: {data.get('error')}")
-            raise RuntimeError(f"补漏接口异常: {data}")
+                raise SessionExpired("历史接口登录态失效")
+            raise RuntimeError(
+                f"补漏接口异常（错误码 {data.get('error_code', '未知')}）"
+            )
         msgs = data.get("messages") or []
         if not msgs:
-            break  # 翻到底了
-        # 实测页面内为【时间正序】（旧→新）。自愈型对账：
-        # 窗口内每条都尝试入库（INSERT OR IGNORE 幂等，已存自动跳过），
-        # 这样不仅能补"锚点之后"的缺口，也能自愈库中部的历史残缺
-        # （2026-08-29 实验：锚点被新消息抬走后，中间的洞靠此机制愈合）。
-        # 见到锚点只记号不停手——正序时锚点身后还有更新的消息。
-        for m in msgs:
-            if m.get("id") == anchor_id:
-                hit_anchor = True
-            inserted += _store(m, gid)
-        if len(msgs) < PAGE_SIZE:
-            break  # 没有更早的了
-        max_mid = min(m.get("id") for m in msgs)
-        time.sleep(PAGE_INTERVAL)
+            return inserted, scanned, False, "服务器历史已到底，仍未到达停止锚点"
 
-    if inserted:
-        log.info("补漏完成：新增 %d 条（锚点 %s）", inserted, anchor_id)
-    else:
-        log.info("对账完成：无缺口")
-    import runtime_state
-    runtime_state.touch_backfill(_count_total())
-    if not hit_anchor and inserted >= MAX_PER_RUN:
-        log.warning("补漏达到单次上限 %d 条仍未追到锚点——缺口过深，"
-                    "面板将在第 4 步起标注「缺口未补全」", MAX_PER_RUN)
-        return inserted, False
-    return inserted, True
+        ids = [int(m["id"]) for m in msgs if m.get("id") is not None]
+        if len(ids) != len(msgs):
+            return inserted, scanned, False, "服务器返回的消息缺少 ID"
+        scanned += len(ids)
+        reached_before = min(ids) <= before_id
+        for m in msgs:
+            mid = int(m.get("id", 0))
+            if before_id < mid and (after_id is None or mid < after_id):
+                inserted += _store(m, gid)
+        if reached_before:
+            return inserted, scanned, True, ""
+        if len(ids) < page_count:
+            return inserted, scanned, False, "服务器历史已到底，仍未到达停止锚点"
+        max_mid = min(ids)
+        time.sleep(PAGE_INTERVAL)
+    return inserted, scanned, False, f"达到单次 {MAX_PER_RUN} 条扫描上限"
 
 
 def _count_total():

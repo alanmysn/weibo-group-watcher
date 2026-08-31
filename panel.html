@@ -28,8 +28,11 @@
   @keyframes blink { 50% { opacity: .3; } }
   #status-text { color: var(--muted); font-size: 13px; }
   #count { margin-left: auto; color: var(--muted); font-size: 13px; }
+  .header-link { color: var(--muted); font-size: 13px; text-decoration: none; }
+  .header-link:hover { color: var(--text); }
   main { max-width: 680px; margin: 0 auto; padding: 8px 0 40px; }
   .msg { display: flex; gap: 10px; padding: 10px 14px; border-bottom: 1px solid var(--border); }
+  .msg.special { background: #fff9e8; border-left: 3px solid #e2a000; padding-left: 11px; }
   .avatar-wrap { flex: none; position: relative; width: 38px; height: 38px; }
   .avatar-letter {
     width: 100%; height: 100%; border-radius: 50%;
@@ -87,9 +90,10 @@
     font-size: 12.5px; cursor: pointer; font-family: inherit;
   }
   #unread-badge:hover { filter: brightness(1.1); }
+  #unread-badge.special { background: #d99000; }
   #gaps-bar {
     position: sticky; z-index: 9;
-    padding: 8px 14px; font-size: 13px; color: #8a6d1a;
+    padding: 8px 44px 8px 14px; font-size: 13px; color: #8a6d1a;
     background: #fff7e0; border-bottom: 1px solid #f0e2b6; display: none;
   }
   #gaps-bar .gap-item { margin: 2px 0; }
@@ -100,13 +104,20 @@
   }
   #gaps-bar button:disabled { opacity: .6; cursor: wait; }
   #gaps-bar button:hover:not(:disabled) { background: #fdf3d0; }
+  #gaps-bar .gap-close {
+    position: absolute; top: 5px; right: 8px; margin: 0; padding: 0 6px;
+    border: 0; background: transparent; font-size: 20px; line-height: 26px;
+  }
+  #gaps-bar .gap-close:hover:not(:disabled) { background: transparent; color: #5f4a12; }
 </style>
 </head>
 <body>
 <header>
   <span id="dot"></span><span id="status-text">连接中…</span>
-  <button id="unread-badge" hidden title="跳到最早待读处">待读 <span id="unread-n">0</span></button>
+  <button id="unread-badge" hidden title="跳到最早待读处">待读 0</button>
   <span id="count"></span>
+  <a class="header-link" href="/gaps" target="_blank">遗漏记录</a>
+  <a class="header-link" href="/settings" target="_blank">特别关注</a>
 </header>
 <div id="gaps-bar"></div>
 <main id="feed">
@@ -130,6 +141,9 @@ let unread = 0;
 let jumpingToUnread = false;
 let initialPositioning = true;
 let initialLoadDone = false;
+let specialUids = new Set();
+let attentionMode = false;
+let specialQueue = [];
 
 function esc(s) {
   const d = document.createElement('div');
@@ -192,8 +206,10 @@ function cardHtml(m) {
 function makeNode(m) {
   const div = document.createElement('div');
   div.dataset.id = m.id;   // 滚动已读检测用
+  div.dataset.uid = m.from_uid || '';
   const isSys = m.type === 344;
-  div.className = 'msg' + (isSys ? ' sys' : '');
+  const isSpecial = specialUids.has(String(m.from_uid || ''));
+  div.className = 'msg' + (isSys ? ' sys' : '') + (isSpecial ? ' special' : '');
   if (isSys) {
     div.innerHTML = `<div class="body">${esc(m.content)}</div>`;
     return div;
@@ -290,24 +306,20 @@ async function pollGaps() {
     // 吸顶：标注条贴在 header 正下方，滚动时不消失
     const header = document.querySelector('header');
     if (header) bar.style.top = header.offsetHeight + 'px';
-    const gaps = d.gaps || [];
-    if (!gaps.length) { bar.style.display = 'none'; bar.innerHTML = ''; return; }
-    const items = gaps.map(g => {
-      const start = fmtTime(g.start_ts);
-      const end = g.end_ts ? fmtTime(g.end_ts) : '现在（休眠中）';
-      return `<div class="gap-item">⏸ 工具休眠 ${start} ~ ${end}，期间消息未采集</div>`;
-    }).join('');
+    const gap = d.latest;
+    if (!gap) {
+      bar.style.display = 'none'; bar.innerHTML = ''; return;
+    }
+    const start = fmtTime(gap.start_ts);
+    const end = gap.end_ts ? fmtTime(gap.end_ts) : '现在（休眠中）';
     bar.style.display = 'block';
-    bar.innerHTML = items +
-      `<div class="gap-item"><button id="backfill-btn" title="拉取一次微博历史，把缺口消息补回（会清一次手机端角标）">手动补漏</button></div>`;
-    document.getElementById('backfill-btn').addEventListener('click', async (ev) => {
-      const btn = ev.target;
-      btn.disabled = true; btn.textContent = '补漏中…';
+    bar.innerHTML = `<button class="gap-close" title="关闭这条提醒" aria-label="关闭这条提醒">×</button>` +
+      `<div class="gap-item">⏸ 工具休眠 ${start} ~ ${end}，期间消息未采集</div>`;
+    bar.querySelector('.gap-close').addEventListener('click', async () => {
       try {
-        const r = await fetch('/api/backfill', { method: 'POST' });
-        const d = await r.json();
-        if (!d.ok && d.msg) { btn.textContent = '已在进行'; }
-      } catch (e) { btn.textContent = '失败，稍后重试'; btn.disabled = false; }
+        const r = await fetch(`/api/gaps/${gap.id}/dismiss`, { method: 'POST' });
+        if (r.ok) { bar.style.display = 'none'; bar.innerHTML = ''; }
+      } catch (e) {}
     });
   } catch (e) {}
 }
@@ -332,11 +344,36 @@ pollState();
 pollGaps();
 
 const badgeEl = document.getElementById('unread-badge');
-const unreadN = document.getElementById('unread-n');
 
 function updateBadge() {
-  badgeEl.hidden = unread <= 0;
-  unreadN.textContent = unread;
+  const n = attentionMode ? specialQueue.length : unread;
+  badgeEl.hidden = n <= 0;
+  badgeEl.classList.toggle('special', attentionMode);
+  badgeEl.textContent = attentionMode ? `★ 特别 ${n}` : `待读 ${n}`;
+  badgeEl.title = attentionMode ? '跳到下一条特别关注消息' : '跳到最早待读处';
+}
+
+function markSpecialsThrough(id) {
+  if (!attentionMode) return;
+  specialQueue = specialQueue.filter(mid => mid > id);
+  updateBadge();
+}
+
+async function loadSpecialUsers() {
+  try {
+    const data = await (await fetch('/api/special-users')).json();
+    specialUids = new Set((data.special_uids || []).map(String));
+    for (const el of feed.querySelectorAll('.msg')) {
+      el.classList.toggle('special', specialUids.has(el.dataset.uid));
+    }
+    if (attentionMode) {
+      specialQueue = specialQueue.filter(id => {
+        const msg = findMessage(id);
+        return !msg || specialUids.has(msg.dataset.uid);
+      });
+      updateBadge();
+    }
+  } catch (e) {}
 }
 
 // 上报已读：视野内最新一条消息的 ID（防抖）
@@ -353,7 +390,10 @@ function reportRead(id) {
         body: JSON.stringify({ id }),
       });
       const d = await r.json();
-      if (d.unread != null) { unread = d.unread; lastReadId = id; updateBadge(); }
+      if (d.unread != null) {
+        unread = d.unread; lastReadId = id;
+        markSpecialsThrough(id); updateBadge();
+      }
     } catch (e) {}
   }, 400);
 }
@@ -376,8 +416,7 @@ window.addEventListener('scroll', () => {
   }, 150);
 }, { passive: true });
 
-// 点击角标 → 跳到最早待读处（分割线）
-badgeEl.addEventListener('click', async () => {
+async function enterUnreadMode() {
   jumpingToUnread = true;
   try {
     const s = await (await fetch('/api/state')).json();
@@ -385,6 +424,8 @@ badgeEl.addEventListener('click', async () => {
     if (!targetId) {
       unread = 0; updateBadge(); return;
     }
+    const special = await (await fetch('/api/special-unread')).json();
+    specialQueue = (special.ids || []).map(Number);
     let msg = findMessage(targetId);
     while (!msg && oldestId !== 'done') {
       if (loading) {
@@ -397,15 +438,40 @@ badgeEl.addEventListener('click', async () => {
     if (!msg) return;  // 找不到时留在原处，绝不再跳到最顶部
     const div = placeDividerBefore(targetId);
     if (div) div.scrollIntoView({ block: 'start' });
+    attentionMode = true;
+    markSpecialsThrough(targetId);  // 第一条待读若正是特别消息，已进入视野
+    updateBadge();
   } finally {
     setTimeout(() => { jumpingToUnread = false; }, 500);
   }
+}
+
+async function jumpNextSpecial() {
+  if (!specialQueue.length) { updateBadge(); return; }
+  const targetId = specialQueue[0];
+  const msg = findMessage(targetId);
+  if (!msg) return;
+  jumpingToUnread = true;
+  msg.scrollIntoView({ block: 'center' });
+  specialQueue = specialQueue.filter(id => id > targetId);
+  updateBadge();
+  setTimeout(() => {
+    jumpingToUnread = false;
+    reportRead(targetId);  // 用户已确认：跨过的普通消息一并计已读
+  }, 500);
+}
+
+badgeEl.addEventListener('click', () => {
+  if (jumpingToUnread) return;
+  if (attentionMode) jumpNextSpecial();
+  else enterUnreadMode();
 });
 
 async function loadEmojis() {
   try { emojiMap = await (await fetch('/api/emojis')).json(); } catch (e) {}
 }
 loadEmojis();
+setInterval(loadSpecialUsers, 30000);
 
 const es = new EventSource('/api/stream');
 es.onmessage = (ev) => {
@@ -414,7 +480,7 @@ es.onmessage = (ev) => {
   if (m.type === 'backfill_done') {
     const bar = document.getElementById('gaps-bar');
     bar.style.display = 'block';
-    bar.innerHTML = `<div class="gap-item">✅ 补漏完成，新增 ${m.inserted} 条${m.complete ? '' : '（缺口过深，可能未补全）'}，正在刷新…</div>`;
+    bar.innerHTML = `<div class="gap-item">${m.complete ? '✅ 补漏完成' : '⚠️ 补漏未完成'}，新增 ${m.inserted} 条，正在刷新…</div>`;
     setTimeout(() => location.reload(), 1500);
     return;
   }
@@ -422,6 +488,13 @@ es.onmessage = (ev) => {
   seen.add(m.id);
   const nearBottom = window.innerHeight + window.scrollY >= document.body.scrollHeight - 300;
   feed.appendChild(makeNode(m));
+  if (attentionMode && !nearBottom
+      && specialUids.has(String(m.from_uid || ''))
+      && !specialQueue.includes(Number(m.id))) {
+    specialQueue.push(Number(m.id));
+    specialQueue.sort((a, b) => a - b);
+    updateBadge();
+  }
   if (nearBottom) {
     window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
     reportRead(m.id);  // 停在底部时新消息即计已读
@@ -429,6 +502,7 @@ es.onmessage = (ev) => {
 };
 
 (async () => {
+  await loadSpecialUsers();
   await pollState();      // 先拿已读锚点 → 首次渲染才能画出分割线
   await loadOlder();
   // 首页始终展示最新消息；这次程序自动滚动不算用户阅读。

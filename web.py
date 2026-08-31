@@ -75,6 +75,18 @@ def index():
         return f.read()
 
 
+@app.route("/settings")
+def settings():
+    with open("settings.html", encoding="utf-8") as f:
+        return f.read()
+
+
+@app.route("/gaps")
+def gaps_page():
+    with open("gaps.html", encoding="utf-8") as f:
+        return f.read()
+
+
 @app.route("/api/messages")
 def api_messages():
     before = request.args.get("before", type=int)
@@ -136,6 +148,25 @@ def api_state():
     return jsonify(s)
 
 
+@app.route("/api/special-users", methods=["GET", "POST"])
+def api_special_users():
+    if request.method == "GET":
+        return jsonify({"users": store.list_users(),
+                        "special_uids": store.get_special_uids()})
+    data = request.get_json(silent=True) or {}
+    uid = str(data.get("uid", ""))
+    enabled = data.get("enabled")
+    if not re.fullmatch(r"\d+", uid) or not isinstance(enabled, bool):
+        abort(400)
+    store.set_special_user(uid, enabled)
+    return jsonify({"ok": True})
+
+
+@app.route("/api/special-unread")
+def api_special_unread():
+    return jsonify({"ids": store.list_unread_special_ids()})
+
+
 @app.route("/api/prepare-stop", methods=["POST"])
 def api_prepare_stop():
     """停止脚本调用：先记下准确停机时刻，再由脚本结束本进程。"""
@@ -161,33 +192,53 @@ def api_read():
 
 @app.route("/api/gaps")
 def api_gaps():
-    """缺口账本（休眠/断线时段，面板如实标注）。"""
-    return jsonify({"gaps": store.list_gaps()})
+    """最近缺口账本，以及首页应显示的最新一条提醒。"""
+    days = min(max(request.args.get("days", 7, type=int), 1), 30)
+    since_ts = int(time.time()) - days * 86400
+    return jsonify({"latest": store.get_latest_gap_alert(),
+                    "gaps": store.list_gaps(since_ts)})
+
+
+@app.route("/api/gaps/<int:gap_id>/dismiss", methods=["POST"])
+def api_dismiss_gap(gap_id):
+    """关闭首页提醒但保留缺口记录。"""
+    if not store.dismiss_gap(gap_id, int(time.time())):
+        abort(404)
+    return jsonify({"ok": True})
 
 
 _backfilling = threading.Event()
 
 
+@app.route("/api/backfill-state")
+def api_backfill_state():
+    return jsonify({"running": _backfilling.is_set()})
+
+
 @app.route("/api/backfill", methods=["POST"])
 def api_backfill():
-    """手动补漏：用户点击面板按钮触发（后台线程，防重入）。
+    """补漏至指定缺口（同时补其后更新的缺口；后台线程防重入）。
 
     补漏=拉取=会把微博已读位置推到最新（手机端角标清一次）——
     这是用户已知的取舍，故只由手动触发，绝不自动。
     """
+    data = request.get_json(silent=True) or {}
+    gap_id = data.get("gap_id")
+    if not isinstance(gap_id, int) or gap_id <= 0:
+        abort(400)
     if _backfilling.is_set():
         return jsonify({"ok": False, "msg": "补漏进行中"}), 409
+    if not store.list_unfilled_closed_gaps_from(gap_id):
+        return jsonify({"ok": False,
+                        "msg": "所选缺口不存在、尚未结束或已经补漏"}), 400
     _backfilling.set()
     cfg = app.config["CFG"]
 
     def worker():
         import backfill
         try:
-            inserted, complete = backfill.backfill_once(cfg)
-            if complete:
-                store.clear_closed_gaps()  # 缺口已填平，标注消失
-            broadcast({"type": "backfill_done", "inserted": inserted,
-                       "complete": complete})
+            result = backfill.backfill_to_gap(cfg, gap_id)
+            broadcast({"type": "backfill_done", **result})
         except Exception as e:
             log.warning("手动补漏失败: %s", e)
             broadcast({"type": "backfill_done", "inserted": 0,

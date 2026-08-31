@@ -115,7 +115,7 @@ def _run_session(cfg, stop_event=None):
                 if not item.get("successful"):
                     raise RuntimeError(f"握手被拒: {item}")
                 client_id = item.get("clientId")
-    log.info("握手成功 clientId=%s…", client_id[:8])
+    log.info("握手成功")
 
     # ② 订阅我的私人消息频道
     ws.send(json.dumps([{
@@ -130,7 +130,7 @@ def _run_session(cfg, stop_event=None):
                 if not item.get("successful"):
                     raise RuntimeError(f"订阅失败（钥匙可能过期）: {item}")
                 subscribed = True
-    log.info("订阅成功 /im/%s，开始监听群消息…", my_uid)
+    log.info("订阅成功，开始监听群消息…")
 
     # ③ 激活长轮询循环：advice-connect（探针帧序的第③帧，会话激活密钥）
     #    —— 缺了它，服务器不会把会话置入在线状态，首个普通 connect 捏满
@@ -184,7 +184,7 @@ def _run_session(cfg, stop_event=None):
                 elif channel == "/im/" + my_uid:
                     n_stored += _handle_push(item, gid)
                 elif channel.startswith("/meta/"):
-                    log.debug("meta 帧: %s", str(item)[:120])
+                    log.debug("收到服务器状态帧")
             if replied:
                 break
 
@@ -229,8 +229,7 @@ def _store_message(info, gid):
         conn.commit()
         if cur.rowcount:
             name = (info.get("from_user") or {}).get("screen_name", "?")
-            text = (info.get("content") or "").replace("\n", " ")[:40]
-            log.info("收到并入库 [%s] %s", name, text)
+            log.info("收到并入库 1 条消息")
             runtime_state.touch_message()
             try:
                 import web
@@ -247,7 +246,7 @@ def _store_message(info, gid):
             except Exception:
                 pass  # 面板广播失败不影响采集主流程
             return 1
-        log.debug("重复消息跳过 id=%s", info.get("id"))
+        log.debug("重复消息已跳过")
         return 0
     finally:
         conn.close()
