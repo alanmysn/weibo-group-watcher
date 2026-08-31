@@ -36,7 +36,7 @@
 
 ## 架构与配方速查
 
-- 架构：单进程三帽（采集/存储/面板），数据单向流动 → 03 §1-§3；数据库六张表（messages/images/read_state/special_users/meta/gaps）→ 03 §4。
+- 架构：单进程三帽（采集/存储/面板），数据单向流动 → 03 §1-§3；数据库七张表（messages/images/attachments/read_state/special_users/meta/gaps）→ 03 §4。
 - 采集配方（2026-08-27 探针实测）：长连接 `wss://web.im.weibo.com/im`（Bayeux 握手 → 订阅 `/im/{uid}`）；历史消息接口 `webim/groupchat/query_messages.json`；握手帧与消息字段样例 → 03 §6.1。
 - 配方失效预案：重新探针观摩网页版抄新配方（探针脚本曾留存于 `%TEMP%\weibo-probe`，临时目录可能被清理；方法与数据结构已固化在 03 §6）。
 - 图片链接 3 小时整过期（实测）→ 必须本地缓存 → 03 §7。
