@@ -12,6 +12,7 @@ import time
 
 import requests
 
+import media_cache
 import runtime_state
 import store
 
@@ -152,22 +153,26 @@ def _store(m, gid):
         avatar_url = (m.get("from_user") or {}).get("profile_image_url", "")
         url_objects = json.dumps(m.get("url_objects") or [],
                                  ensure_ascii=False)
+        media_data = media_cache.extract_media_data(m)
         cur = conn.execute(
             "INSERT OR IGNORE INTO messages "
             "(id, gid, from_uid, from_name, avatar_url, content, url_objects, "
-            " type, media_type, time, recall_status) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            " type, media_type, media_data, time, recall_status) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
             (m.get("id"), gid, str(m.get("from_uid", "")),
              (m.get("from_user") or {}).get("screen_name", ""),
              avatar_url, m.get("content", ""), url_objects,
-             m.get("type"), m.get("media_type", 0), m.get("time"),
-             m.get("recall_status", 0)),
+             m.get("type"), m.get("media_type", 0), media_data,
+             m.get("time"), m.get("recall_status", 0)),
         )
         conn.execute("UPDATE messages SET avatar_url=?, url_objects=?, "
+                     "media_data=COALESCE(?, media_data), "
                      "from_name=?, recall_status=? WHERE id=?",
-                     (avatar_url, url_objects,
+                     (avatar_url, url_objects, media_data,
                       (m.get("from_user") or {}).get("screen_name", ""),
                       m.get("recall_status", 0), m.get("id")))
         conn.commit()
+        media_cache.schedule(m.get("id"), m.get("media_type", 0))
         return 1 if cur.rowcount else 0
     finally:
         conn.close()

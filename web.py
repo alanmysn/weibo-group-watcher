@@ -19,6 +19,7 @@ from urllib.parse import quote, unquote
 import requests
 from flask import Flask, Response, abort, jsonify, request, send_file
 
+import media_cache
 import runtime_state
 import store
 
@@ -38,9 +39,13 @@ app = Flask(__name__, static_folder=None)
 _subscribers = set()
 _sub_lock = threading.Lock()
 
-MSG_FIELDS = ("id", "gid", "from_uid", "from_name", "avatar_url",
-              "content", "url_objects", "type", "media_type", "time",
-              "recall_status")
+MESSAGE_FIELDS = ("id", "gid", "from_uid", "from_name", "avatar_url",
+                  "content", "url_objects", "type", "media_type", "time",
+                  "recall_status")
+MSG_FIELDS = MESSAGE_FIELDS + ("attachment_name", "attachment_size",
+                               "attachment_status")
+MSG_SELECT = (",".join(f"m.{field}" for field in MESSAGE_FIELDS)
+              + ",a.file_name,a.size_bytes,a.status")
 
 
 def broadcast(msg: dict):
@@ -95,13 +100,15 @@ def api_messages():
     try:
         if before:
             rows = conn.execute(
-                f"SELECT {','.join(MSG_FIELDS)} FROM messages "
-                "WHERE id < ? ORDER BY id DESC LIMIT ?",
+                f"SELECT {MSG_SELECT} FROM messages m "
+                "LEFT JOIN attachments a ON a.msg_id=m.id "
+                "WHERE m.id < ? ORDER BY m.id DESC LIMIT ?",
                 (before, limit)).fetchall()
         else:
             rows = conn.execute(
-                f"SELECT {','.join(MSG_FIELDS)} FROM messages "
-                "ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+                f"SELECT {MSG_SELECT} FROM messages m "
+                "LEFT JOIN attachments a ON a.msg_id=m.id "
+                "ORDER BY m.id DESC LIMIT ?", (limit,)).fetchall()
     finally:
         conn.close()
     msgs = [_row_to_dict(r) for r in rows]
@@ -248,6 +255,68 @@ def api_backfill():
 
     threading.Thread(target=worker, daemon=True).start()
     return jsonify({"ok": True})
+
+
+@app.route("/api/image/<int:msg_id>")
+def api_image(msg_id):
+    path = media_cache.get_image_path(msg_id, cache_if_missing=True)
+    if not path:
+        abort(404)
+    return send_file(path, max_age=86400)
+
+
+@app.route("/api/attachment-info/<int:msg_id>")
+def api_attachment_info(msg_id):
+    try:
+        info = media_cache.ensure_attachment_info(msg_id)
+    except (OSError, requests.RequestException, ValueError,
+            json.JSONDecodeError, RuntimeError) as error:
+        log.warning("附件信息读取失败（%s）", type(error).__name__)
+        return jsonify({"status": "failed", "error": "附件信息读取失败"}), 503
+    if not info:
+        conn = store.get_conn()
+        try:
+            row = conn.execute(
+                "SELECT content, media_type, media_data FROM messages WHERE id=?",
+                (msg_id,),
+            ).fetchone()
+        finally:
+            conn.close()
+        if not row or row[1] != 5:
+            abort(404)
+        status, error = "unavailable", "历史附件尚未回填"
+        info = {"file_name": row[0], "size_bytes": None,
+                "status": status, "error": error}
+    return jsonify({key: info.get(key) for key in
+                    ("file_name", "size_bytes", "status", "error")})
+
+
+@app.route("/api/attachment/<int:msg_id>")
+def api_attachment(msg_id):
+    try:
+        result = media_cache.open_attachment(msg_id)
+    except (OSError, requests.RequestException, ValueError,
+            json.JSONDecodeError, RuntimeError) as error:
+        log.warning("附件下载失败（%s）", type(error).__name__)
+        return jsonify({"error": "附件下载失败，请稍后重试"}), 503
+    if not result:
+        abort(404)
+    upstream, file_name = result
+
+    def stream():
+        try:
+            yield from upstream.iter_content(64 * 1024)
+        finally:
+            upstream.close()
+
+    headers = {
+        "Content-Disposition": "attachment; filename*=UTF-8''" + quote(file_name),
+    }
+    if upstream.headers.get("Content-Length"):
+        headers["Content-Length"] = upstream.headers["Content-Length"]
+    return Response(stream(), headers=headers,
+                    content_type=upstream.headers.get(
+                        "Content-Type", "application/octet-stream"))
 
 
 def start(cfg, host="127.0.0.1", port=8765):

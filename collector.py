@@ -13,6 +13,7 @@ import time
 
 import websocket
 
+import media_cache
 import runtime_state
 import store
 
@@ -210,23 +211,27 @@ def _store_message(info, gid):
         avatar_url = (info.get("from_user") or {}).get("profile_image_url", "")
         url_objects = json.dumps(info.get("url_objects") or [],
                                  ensure_ascii=False)
+        media_data = media_cache.extract_media_data(info)
         cur = conn.execute(
             "INSERT OR IGNORE INTO messages "
             "(id, gid, from_uid, from_name, avatar_url, content, url_objects, "
-            " type, media_type, time, recall_status) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            " type, media_type, media_data, time, recall_status) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
             (info.get("id"), gid, str(info.get("from_uid", "")),
              (info.get("from_user") or {}).get("screen_name", ""),
              avatar_url, info.get("content", ""), url_objects,
-             info.get("type"), info.get("media_type", 0), info.get("time"),
-             info.get("recall_status", 0)),
+             info.get("type"), info.get("media_type", 0), media_data,
+             info.get("time"), info.get("recall_status", 0)),
         )
         # 重复消息也刷新头像/分享包（头像链接 3h 过期，重连回放时顺手续命）
         conn.execute("UPDATE messages SET avatar_url=?, url_objects=?, "
+                     "media_data=COALESCE(?, media_data), "
                      "from_name=?, recall_status=? WHERE id=?",
-                     (avatar_url, url_objects,
+                     (avatar_url, url_objects, media_data,
                       (info.get("from_user") or {}).get("screen_name", ""),
                       info.get("recall_status", 0), info.get("id")))
         conn.commit()
+        media_cache.schedule(info.get("id"), info.get("media_type", 0))
         if cur.rowcount:
             name = (info.get("from_user") or {}).get("screen_name", "?")
             log.info("收到并入库 1 条消息")

@@ -21,6 +21,7 @@ CREATE TABLE IF NOT EXISTS messages (
     url_objects   TEXT,                  -- 分享消息的原帖数据包（JSON）
     type          INTEGER,               -- 消息类型（321 正文 / 344 系统通知…）
     media_type    INTEGER DEFAULT 0,     -- 媒体类型（0 文字 / 1 图片 / 14 链接分享…）
+    media_data    TEXT,                  -- fid/pic_infos 等媒体下载字段（JSON）
     time          INTEGER,               -- 微博侧时间戳（秒）
     recall_status INTEGER DEFAULT 0,     -- 撤回状态
     created_at    TEXT DEFAULT (datetime('now','localtime'))
@@ -34,6 +35,19 @@ CREATE TABLE IF NOT EXISTS images (
     file_path     TEXT NOT NULL,         -- data/images/ 下的相对路径
     downloaded_at TEXT DEFAULT (datetime('now','localtime')),
     size_bytes    INTEGER
+);
+
+-- 聊天消息中的文件附件元数据（文件本体按需下载，不在工具内缓存）
+CREATE TABLE IF NOT EXISTS attachments (
+    msg_id        INTEGER PRIMARY KEY,
+    fid           TEXT NOT NULL,
+    file_name     TEXT,
+    extension     TEXT,
+    file_path     TEXT,
+    size_bytes    INTEGER,
+    status        TEXT NOT NULL DEFAULT 'pending',
+    downloaded_at TEXT,
+    error         TEXT
 );
 
 -- 已读锚点：单行表，续读/待读数的计算基准
@@ -80,7 +94,7 @@ def init_db():
     conn = get_conn()
     try:
         conn.executescript(SCHEMA)
-        for col in ("avatar_url TEXT", "url_objects TEXT"):
+        for col in ("avatar_url TEXT", "url_objects TEXT", "media_data TEXT"):
             try:
                 conn.execute(f"ALTER TABLE messages ADD COLUMN {col}")
             except sqlite3.OperationalError:
