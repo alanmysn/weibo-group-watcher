@@ -75,6 +75,7 @@ def cmd_run(_args):
         return
 
     import collector
+    import media_cache
     import web
 
     cfg = config.load_config()
@@ -83,6 +84,7 @@ def cmd_run(_args):
 
     # 面板服务（后台线程，仅本机）
     web.start(cfg)
+    media_cache.start_periodic_cleanup()
 
     # 长连接采集（只收不拉——拉取会推进微博已读位置、清掉手机端角标，
     # 已由 2026-08-30 对照实验实锤；缺口不自动补，面板如实标注，

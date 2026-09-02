@@ -2,6 +2,7 @@ import json
 import os
 import sys
 import tempfile
+import time
 import unittest
 from unittest import mock
 
@@ -65,6 +66,25 @@ class MediaCacheTest(unittest.TestCase):
             conn.commit()
         finally:
             conn.close()
+
+    def _insert_cached_image(self, msg_id, downloaded_at, body=b"img"):
+        self._insert_message(msg_id, 1, {"fids": [str(msg_id)]})
+        os.makedirs(media_cache.IMAGE_DIR, exist_ok=True)
+        path = os.path.join(media_cache.IMAGE_DIR, f"{msg_id}.jpg")
+        with open(path, "wb") as file:
+            file.write(body)
+        conn = store.get_conn()
+        try:
+            conn.execute(
+                "INSERT INTO images "
+                "(msg_id, file_path, downloaded_at, size_bytes) "
+                "VALUES (?, ?, ?, ?)",
+                (msg_id, f"images/{msg_id}.jpg", downloaded_at, len(body)),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        return path
 
     def test_extracts_only_required_media_fields(self):
         raw = media_cache.extract_media_data({
@@ -154,6 +174,65 @@ class MediaCacheTest(unittest.TestCase):
             conn.close()
         data = web.app.test_client().get("/api/attachment-info/4").get_json()
         self.assertEqual("unavailable", data["status"])
+
+    def test_cleanup_removes_only_images_older_than_90_days(self):
+        old_path = self._insert_cached_image(10, "2026-05-01 00:00:00")
+        new_path = self._insert_cached_image(11, "2026-08-20 00:00:00")
+        now = time.mktime((2026, 9, 2, 12, 0, 0, 0, 0, -1))
+
+        result = media_cache.cleanup_images(now=now)
+
+        self.assertEqual({"deleted": 1, "size_bytes": 3}, result)
+        self.assertFalse(os.path.exists(old_path))
+        self.assertTrue(os.path.exists(new_path))
+        conn = store.get_conn()
+        try:
+            self.assertEqual(1, conn.execute(
+                "SELECT COUNT(*) FROM images").fetchone()[0])
+            self.assertEqual(2, conn.execute(
+                "SELECT COUNT(*) FROM messages WHERE id IN (10,11)"
+            ).fetchone()[0])
+        finally:
+            conn.close()
+
+    def test_cleanup_api_reports_current_cache(self):
+        self._insert_cached_image(12, "2026-08-20 00:00:00", b"1234")
+        client = web.app.test_client()
+        response = client.get("/api/image-cleanup")
+
+        self.assertEqual(200, response.status_code)
+        self.assertEqual(1, response.get_json()["count"])
+        self.assertEqual(4, response.get_json()["size_bytes"])
+        self.assertEqual(90, response.get_json()["retention_days"])
+
+        now = time.mktime((2026, 9, 2, 12, 0, 0, 0, 0, -1))
+        with mock.patch.object(media_cache.time, "time", return_value=now):
+            result = client.post(
+                "/api/image-cleanup", json={"months": 3}
+            ).get_json()
+        self.assertEqual(0, result["deleted"])
+        self.assertEqual(0, result["freed_bytes"])
+        self.assertEqual(4, result["size_bytes"])
+
+    def test_manual_cleanup_accepts_month_range_or_all(self):
+        self._insert_cached_image(13, "2026-05-01 00:00:00")
+        self._insert_cached_image(14, "2026-08-20 00:00:00")
+        now = time.mktime((2026, 9, 2, 12, 0, 0, 0, 0, -1))
+        client = web.app.test_client()
+
+        with mock.patch.object(media_cache.time, "time", return_value=now):
+            response = client.post("/api/image-cleanup", json={"months": 2})
+        self.assertEqual(1, response.get_json()["deleted"])
+
+        response = client.post("/api/image-cleanup", json={"months": 0})
+        self.assertEqual(1, response.get_json()["deleted"])
+        self.assertEqual(0, response.get_json()["count"])
+
+    def test_manual_cleanup_rejects_unknown_range(self):
+        response = web.app.test_client().post(
+            "/api/image-cleanup", json={"months": 6}
+        )
+        self.assertEqual(400, response.status_code)
 
 
 if __name__ == "__main__":

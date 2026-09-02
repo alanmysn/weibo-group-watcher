@@ -4,6 +4,7 @@ import logging
 import os
 import re
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import urlparse
 
@@ -20,12 +21,15 @@ DOWNLOAD_URL = "https://upload.api.weibo.com/2/mss/msget"
 IMAGE_MAX_BYTES = 25 * 1024 * 1024
 IMAGE_TYPES = {1, 10, 15}
 SUPPORTED_TYPES = IMAGE_TYPES
+IMAGE_RETENTION_DAYS = 90
+IMAGE_CLEANUP_INTERVAL = 24 * 60 * 60
 
 IMAGE_DIR = os.path.join(store.DATA_DIR, "images")
 
 _executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="media-cache")
 _pending = set()
 _pending_lock = threading.Lock()
+_cleanup_lock = threading.Lock()
 
 
 class TooLarge(RuntimeError):
@@ -115,6 +119,71 @@ def get_image_path(msg_id, cache_if_missing=False):
         return path
     cache_message(msg_id)
     return _cached_image_path(msg_id)
+
+
+def image_cache_stats():
+    conn = store.get_conn()
+    try:
+        count, size = conn.execute(
+            "SELECT COUNT(*), COALESCE(SUM(size_bytes), 0) FROM images"
+        ).fetchone()
+        return {"count": count, "size_bytes": size,
+                "retention_days": IMAGE_RETENTION_DAYS}
+    finally:
+        conn.close()
+
+
+def cleanup_images(days=IMAGE_RETENTION_DAYS, now=None):
+    """删除缓存时间超过指定天数的图片及对应索引，消息本体不动。"""
+    deleted = 0
+    size_bytes = 0
+    with _cleanup_lock:
+        conn = store.get_conn()
+        try:
+            sql = ("SELECT msg_id, file_path, COALESCE(size_bytes, 0) "
+                   "FROM images")
+            params = ()
+            if days is not None:
+                cutoff = time.strftime(
+                    "%Y-%m-%d %H:%M:%S",
+                    time.localtime((now or time.time())
+                                   - days * 24 * 60 * 60),
+                )
+                sql += " WHERE downloaded_at < ?"
+                params = (cutoff,)
+            rows = conn.execute(sql, params).fetchall()
+            for msg_id, relative, size in rows:
+                path = _absolute_data_path(relative)
+                try:
+                    if os.path.isfile(path):
+                        os.remove(path)
+                except OSError:
+                    log.warning("旧图片清理失败（文件占用或无权限）")
+                    continue
+                conn.execute("DELETE FROM images WHERE msg_id=?", (msg_id,))
+                deleted += 1
+                size_bytes += size
+            conn.commit()
+        finally:
+            conn.close()
+    if deleted:
+        scope = "全部" if days is None else f"超过 {days} 天的"
+        log.info("已清理 %d 张%s缓存图片", deleted, scope)
+    return {"deleted": deleted, "size_bytes": size_bytes}
+
+
+def start_periodic_cleanup():
+    """后台每天执行一次 90 天图片清理。"""
+    def worker():
+        while True:
+            try:
+                cleanup_images()
+            except (OSError, ValueError):
+                log.exception("图片自动清理失败")
+            time.sleep(IMAGE_CLEANUP_INTERVAL)
+
+    threading.Thread(target=worker, daemon=True,
+                     name="image-cleanup").start()
 
 
 def get_attachment_info(msg_id):

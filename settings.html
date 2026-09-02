@@ -21,6 +21,11 @@
   button.on { background:#fff0bd; color:#8a6100; }
   button:disabled { opacity:.55; cursor:wait; }
   .empty { padding:30px; text-align:center; color:var(--muted); }
+  .cleanup { margin-top:10px; padding:14px; background:var(--card); }
+  .cleanup p { margin:0 0 10px; color:var(--muted); font-size:13px; line-height:1.6; }
+  .cleanup button { width:auto; background:#1677ff; color:#fff; font-weight:600; }
+  .cleanup select { height:34px; margin-right:8px; padding:0 8px; border:1px solid var(--border); border-radius:8px; background:#fff; font-family:inherit; }
+  #cleanup-result { margin-left:8px; color:var(--muted); font-size:13px; }
 </style>
 </head>
 <body>
@@ -28,9 +33,28 @@
   <h1>特别关注</h1>
   <p>按用户 UID 识别，改昵称后仍是同一个人。</p>
 </header>
-<main id="users"><div class="empty">加载中…</div></main>
+<main>
+  <div class="section-title">图片缓存清理</div>
+  <section class="cleanup">
+    <p id="cache-stats">正在读取缓存占用…</p>
+    <p>每天自动删除缓存时间超过 90 天的图片。手动清理可另选范围；删除后通常无法恢复，消息正文不受影响。</p>
+    <select id="cleanup-range" aria-label="手动清理范围">
+      <option value="1">超过 1 个月</option>
+      <option value="2">超过 2 个月</option>
+      <option value="3">超过 3 个月</option>
+      <option value="0">全部图片</option>
+    </select>
+    <button id="cleanup-images">立即清理</button>
+    <span id="cleanup-result"></span>
+  </section>
+  <section id="users"><div class="empty">加载中…</div></section>
+</main>
 <script>
 const usersEl = document.getElementById('users');
+const cleanupBtn = document.getElementById('cleanup-images');
+const cleanupRange = document.getElementById('cleanup-range');
+const cacheStatsEl = document.getElementById('cache-stats');
+const cleanupResultEl = document.getElementById('cleanup-result');
 
 function esc(s) {
   const d = document.createElement('div');
@@ -89,6 +113,41 @@ usersEl.addEventListener('click', async (ev) => {
 });
 
 loadUsers();
+
+function sizeText(bytes) {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
+
+async function loadCacheStats() {
+  const data = await (await fetch('/api/image-cleanup')).json();
+  cacheStatsEl.textContent = `当前缓存 ${data.count} 张图片，共 ${sizeText(data.size_bytes)}。`;
+}
+
+cleanupBtn.addEventListener('click', async () => {
+  const months = Number(cleanupRange.value);
+  const scope = months === 0 ? '全部缓存图片' : `缓存时间超过 ${months} 个月的图片`;
+  if (!confirm(`将永久删除${scope}，且通常无法恢复。确认继续吗？`)) return;
+  cleanupBtn.disabled = true;
+  cleanupRange.disabled = true;
+  cleanupResultEl.textContent = '清理中…';
+  try {
+    const data = await (await fetch('/api/image-cleanup', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({months}),
+    })).json();
+    cleanupResultEl.textContent = `已清理 ${data.deleted} 张图片，释放 ${sizeText(data.freed_bytes)}。`;
+    cacheStatsEl.textContent = `当前缓存 ${data.count} 张图片，共 ${sizeText(data.size_bytes)}。`;
+  } catch (e) {
+    cleanupResultEl.textContent = '清理失败，请稍后重试。';
+  } finally {
+    cleanupBtn.disabled = false;
+    cleanupRange.disabled = false;
+  }
+});
+
+loadCacheStats();
 </script>
 </body>
 </html>

@@ -86,12 +86,11 @@ async function loadGaps() {
       let stateClass = 'state';
       if (!g.end_ts) state = '尚未结束';
       if (g.filled_at) { state = '已补漏'; stateClass += ' done'; }
-      const dismissed = g.dismissed_at && !g.filled_at ? ' · 首页提醒已关闭' : '';
       const button = g.end_ts && !g.filled_at
         ? `<button data-gap-id="${g.id}" ${working ? 'disabled' : ''}>补漏至此</button>` : '';
       return `<div class="gap"><div class="detail">` +
         `<div class="period">${fmtDate(g.start_ts)} ～ ${fmtDate(g.end_ts)}</div>` +
-        `<div class="meta">持续 ${duration(g.start_ts, g.end_ts)} · <span class="${stateClass}">${state}</span>${dismissed}</div>` +
+        `<div class="meta">持续 ${duration(g.start_ts, g.end_ts)} · <span class="${stateClass}">${state}</span></div>` +
         `</div>${button}</div>`;
     }).join('');
   } catch (e) {

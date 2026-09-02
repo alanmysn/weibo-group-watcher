@@ -136,24 +136,14 @@
   }
   #unread-badge:hover { filter: brightness(1.1); }
   #unread-badge.special { background: #d99000; }
-  #gaps-bar {
-    position: sticky; z-index: 9;
-    padding: 8px 44px 8px 14px; font-size: 13px; color: #8a6d1a;
-    background: #fff7e0; border-bottom: 1px solid #f0e2b6; display: none;
+  #latest-button {
+    position: fixed; right: 18px; bottom: 22px; z-index: 20;
+    border: 0; border-radius: 999px; padding: 9px 14px;
+    background: var(--accent); color: #fff; font-family: inherit;
+    font-size: 13px; font-weight: 600; cursor: pointer;
+    box-shadow: 0 3px 12px rgba(0,0,0,.2);
   }
-  #gaps-bar .gap-item { margin: 2px 0; }
-  #gaps-bar button {
-    margin-left: 8px; border: 1px solid #d9b84a; background: #fff;
-    color: #8a6d1a; border-radius: 6px; padding: 2px 10px;
-    font-size: 12.5px; cursor: pointer; font-family: inherit;
-  }
-  #gaps-bar button:disabled { opacity: .6; cursor: wait; }
-  #gaps-bar button:hover:not(:disabled) { background: #fdf3d0; }
-  #gaps-bar .gap-close {
-    position: absolute; top: 5px; right: 8px; margin: 0; padding: 0 6px;
-    border: 0; background: transparent; font-size: 20px; line-height: 26px;
-  }
-  #gaps-bar .gap-close:hover:not(:disabled) { background: transparent; color: #5f4a12; }
+  #latest-button:hover { filter: brightness(1.08); }
 </style>
 </head>
 <body>
@@ -166,7 +156,6 @@
   <a class="header-link" href="/settings" target="_blank">特别关注</a>
   <a class="header-link" href="/export" target="_blank">导出</a>
 </header>
-<div id="gaps-bar"></div>
 <section id="search-panel" hidden>
   <form id="search-form">
     <input id="search-input" type="search" maxlength="100" placeholder="搜索消息" aria-label="搜索消息">
@@ -178,6 +167,7 @@
 <main id="feed">
   <div class="sentinel" id="sentinel"></div>
 </main>
+<button id="latest-button" type="button" hidden>↓ 最新</button>
 
 <script>
 const feed = document.getElementById('feed');
@@ -192,7 +182,7 @@ const searchSummary = document.getElementById('search-summary');
 const searchPanel = document.getElementById('search-panel');
 const searchToggle = document.getElementById('search-toggle');
 const headerEl = document.querySelector('header');
-const gapsBar = document.getElementById('gaps-bar');
+const latestButton = document.getElementById('latest-button');
 
 let oldestId = null;
 let loading = false;
@@ -217,9 +207,7 @@ function isSearchMode() {
 }
 
 function updateStickyOffsets() {
-  gapsBar.style.top = `${headerEl.offsetHeight}px`;
-  const gapHeight = gapsBar.offsetParent ? gapsBar.offsetHeight : 0;
-  searchPanel.style.top = `${headerEl.offsetHeight + gapHeight}px`;
+  searchPanel.style.top = `${headerEl.offsetHeight}px`;
 }
 
 function setSearchPanel(open) {
@@ -396,6 +384,7 @@ function prependBatch(msgs) {
   }
   sentinel.after(frag);
   if (firstUnreadId && !isSearchMode()) placeDividerBefore(firstUnreadId);
+  requestAnimationFrame(updateLatestButton);
 }
 
 async function loadOlder() {
@@ -445,33 +434,6 @@ const io = new IntersectionObserver((entries) => {
 }, { rootMargin: '200px' });
 io.observe(sentinel);
 
-async function pollGaps() {
-  try {
-    const d = await (await fetch('/api/gaps')).json();
-    const gap = d.latest;
-    if (!gap) {
-      gapsBar.style.display = 'none'; gapsBar.innerHTML = '';
-      updateStickyOffsets();
-      return;
-    }
-    const start = fmtTime(gap.start_ts);
-    const end = gap.end_ts ? fmtTime(gap.end_ts) : '现在（休眠中）';
-    gapsBar.style.display = 'block';
-    gapsBar.innerHTML = `<button class="gap-close" title="关闭这条提醒" aria-label="关闭这条提醒">×</button>` +
-      `<div class="gap-item">⏸ 工具休眠 ${start} ~ ${end}，期间消息未采集</div>`;
-    updateStickyOffsets();
-    gapsBar.querySelector('.gap-close').addEventListener('click', async () => {
-      try {
-        const r = await fetch(`/api/gaps/${gap.id}/dismiss`, { method: 'POST' });
-        if (r.ok) {
-          gapsBar.style.display = 'none'; gapsBar.innerHTML = '';
-          updateStickyOffsets();
-        }
-      } catch (e) {}
-    });
-  } catch (e) {}
-}
-
 async function pollState() {
   try {
     const s = await (await fetch('/api/state')).json();
@@ -487,9 +449,7 @@ async function pollState() {
   } catch (e) { statusText.textContent = '服务未响应'; }
 }
 setInterval(pollState, 5000);
-setInterval(pollGaps, 10000);
 pollState();
-pollGaps();
 
 const badgeEl = document.getElementById('unread-badge');
 
@@ -552,8 +512,20 @@ function reportRead(id) {
 
 // 滚动即已读：向上翻历史/向下看新消息，视野内最新一条上报
 let scrollTimer = null;
+function updateLatestButton() {
+  const distance = document.documentElement.scrollHeight
+    - window.innerHeight - window.scrollY;
+  latestButton.hidden = isSearchMode() || distance < 300;
+}
+
+latestButton.addEventListener('click', () => {
+  window.scrollTo({top:document.documentElement.scrollHeight,
+                   behavior:'smooth'});
+});
+
 window.addEventListener('scroll', () => {
   if (initialPositioning) return;
+  updateLatestButton();
   clearTimeout(scrollTimer);
   scrollTimer = setTimeout(() => {
     let maxVisible = 0;
@@ -675,9 +647,6 @@ es.onmessage = (ev) => {
   const m = JSON.parse(ev.data);
   // 控制类事件：补漏完成 → 提示并刷新
   if (m.type === 'backfill_done') {
-    const bar = document.getElementById('gaps-bar');
-    bar.style.display = 'block';
-    bar.innerHTML = `<div class="gap-item">${m.complete ? '✅ 补漏完成' : '⚠️ 补漏未完成'}，新增 ${m.inserted} 条，正在刷新…</div>`;
     setTimeout(() => location.reload(), 1500);
     return;
   }
@@ -686,6 +655,7 @@ es.onmessage = (ev) => {
   seen.add(m.id);
   const nearBottom = window.innerHeight + window.scrollY >= document.body.scrollHeight - 300;
   feed.appendChild(makeNode(m));
+  requestAnimationFrame(updateLatestButton);
   if (attentionMode && !nearBottom
       && specialUids.has(String(m.from_uid || ''))
       && !specialQueue.includes(Number(m.id))) {
@@ -708,6 +678,7 @@ es.onmessage = (ev) => {
   setTimeout(() => {
     initialPositioning = false;
     initialLoadDone = true;
+    updateLatestButton();
   }, 500);
 })();
 </script>

@@ -231,6 +231,22 @@ def api_special_unread():
     return jsonify({"ids": store.list_unread_special_ids()})
 
 
+@app.route("/api/image-cleanup", methods=["GET", "POST"])
+def api_image_cleanup():
+    if request.method == "GET":
+        return jsonify(media_cache.image_cache_stats())
+    data = request.get_json(silent=True) or {}
+    months = data.get("months")
+    if months not in (0, 1, 2, 3):
+        abort(400)
+    result = media_cache.cleanup_images(
+        days=None if months == 0 else months * 30
+    )
+    stats = media_cache.image_cache_stats()
+    return jsonify({"ok": True, "deleted": result["deleted"],
+                    "freed_bytes": result["size_bytes"], **stats})
+
+
 @app.route("/api/prepare-stop", methods=["POST"])
 def api_prepare_stop():
     """停止脚本调用：先记下准确停机时刻，再由脚本结束本进程。"""
