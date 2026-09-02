@@ -23,6 +23,7 @@ import media_cache
 import runtime_state
 import store
 import exporter
+import storage_cleanup
 
 log = logging.getLogger("watcher.web")
 
@@ -89,6 +90,12 @@ def index():
 @app.route("/settings")
 def settings():
     with open("settings.html", encoding="utf-8") as f:
+        return f.read()
+
+
+@app.route("/storage")
+def storage_page():
+    with open("storage.html", encoding="utf-8") as f:
         return f.read()
 
 
@@ -245,6 +252,39 @@ def api_image_cleanup():
     stats = media_cache.image_cache_stats()
     return jsonify({"ok": True, "deleted": result["deleted"],
                     "freed_bytes": result["size_bytes"], **stats})
+
+
+@app.route("/api/storage-stats")
+def api_storage_stats():
+    conn = store.get_conn()
+    try:
+        messages = conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
+    finally:
+        conn.close()
+    return jsonify({"messages": messages,
+                    "images": media_cache.image_cache_stats()})
+
+
+@app.route("/api/message-cleanup-preview")
+def api_message_cleanup_preview():
+    months = request.args.get("months", type=int)
+    try:
+        return jsonify(storage_cleanup.preview(months))
+    except ValueError as error:
+        return jsonify({"error": str(error)}), 400
+
+
+@app.route("/api/message-cleanup", methods=["POST"])
+def api_message_cleanup():
+    data = request.get_json(silent=True) or {}
+    if data.get("confirmed") is not True:
+        return jsonify({"error": "需要明确确认"}), 400
+    try:
+        result = storage_cleanup.cleanup(data.get("months"))
+    except ValueError as error:
+        return jsonify({"error": str(error)}), 400
+    broadcast({"type": "message_cleanup_done"})
+    return jsonify({"ok": True, **result})
 
 
 @app.route("/api/prepare-stop", methods=["POST"])

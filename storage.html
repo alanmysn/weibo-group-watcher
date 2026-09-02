@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>存储管理</title>
+<style>
+  :root { --bg:#f4f5f7; --card:#fff; --text:#1c1e21; --muted:#747b85; --border:#e4e6ea; --blue:#1677ff; --red:#c9362b; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font-family:-apple-system,"Segoe UI","Microsoft YaHei",sans-serif; }
+  header { padding:16px; background:#fff; border-bottom:1px solid var(--border); }
+  h1 { margin:0; font-size:19px; }
+  header p { margin:5px 0 0; color:var(--muted); font-size:13px; }
+  main { max-width:680px; margin:0 auto; padding:14px; }
+  section { margin-bottom:14px; padding:16px; background:var(--card); border:1px solid var(--border); border-radius:12px; }
+  h2 { margin:0 0 8px; font-size:16px; }
+  p { margin:7px 0; color:var(--muted); font-size:13px; line-height:1.6; }
+  .stats { color:var(--text); font-weight:600; }
+  .controls { display:flex; align-items:center; flex-wrap:wrap; gap:8px; margin-top:12px; }
+  select, button { height:36px; border-radius:8px; font-family:inherit; }
+  select { padding:0 9px; border:1px solid var(--border); background:#fff; }
+  button { padding:0 13px; border:0; color:#fff; font-weight:600; cursor:pointer; }
+  button:disabled { opacity:.5; cursor:wait; }
+  #cleanup-images { background:var(--blue); }
+  #cleanup-messages { background:var(--red); }
+  .result { min-height:20px; margin-top:10px; color:var(--muted); font-size:13px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>存储管理</h1>
+  <p>清理操作永久生效，请在确认数量后执行。</p>
+</header>
+<main>
+  <section>
+    <h2>图片缓存</h2>
+    <p id="image-stats" class="stats">正在读取…</p>
+    <p>每天自动删除超过 3 个月的图片。手动清理不影响消息正文，但图片通常无法恢复。</p>
+    <div class="controls">
+      <select id="image-range" aria-label="图片清理范围">
+        <option value="1">超过 1 个月</option>
+        <option value="2">超过 2 个月</option>
+        <option value="3">超过 3 个月</option>
+        <option value="0">全部图片</option>
+      </select>
+      <button id="cleanup-images">立即清理图片</button>
+    </div>
+    <div id="image-result" class="result"></div>
+  </section>
+
+  <section>
+    <h2>消息记录</h2>
+    <p id="message-stats" class="stats">正在读取…</p>
+    <p>消息不会自动清理。删除时同步删除关联图片、附件信息和被删除时间段的遗漏账本；特别关注名单与运行设置保留。</p>
+    <div class="controls">
+      <select id="message-range" aria-label="消息保留范围">
+        <option value="1">保留最近 1 个月</option>
+        <option value="2">保留最近 2 个月</option>
+        <option value="3">保留最近 3 个月</option>
+        <option value="0">删除全部消息</option>
+      </select>
+      <button id="cleanup-messages">预览并清理消息</button>
+    </div>
+    <div id="message-result" class="result"></div>
+  </section>
+</main>
+<script>
+const imageRange = document.getElementById('image-range');
+const imageButton = document.getElementById('cleanup-images');
+const imageStats = document.getElementById('image-stats');
+const imageResult = document.getElementById('image-result');
+const messageRange = document.getElementById('message-range');
+const messageButton = document.getElementById('cleanup-messages');
+const messageStats = document.getElementById('message-stats');
+const messageResult = document.getElementById('message-result');
+
+function sizeText(bytes) {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
+
+async function loadStats() {
+  const data = await (await fetch('/api/storage-stats')).json();
+  imageStats.textContent = `当前缓存 ${data.images.count} 张图片，共 ${sizeText(data.images.size_bytes)}。`;
+  messageStats.textContent = `当前保存 ${data.messages} 条消息。`;
+}
+
+imageButton.addEventListener('click', async () => {
+  const months = Number(imageRange.value);
+  const scope = months === 0 ? '全部缓存图片' : `超过 ${months} 个月的缓存图片`;
+  if (!confirm(`将永久删除${scope}，且通常无法恢复。确认继续吗？`)) return;
+  imageButton.disabled = true;
+  imageRange.disabled = true;
+  imageResult.textContent = '清理中…';
+  try {
+    const data = await (await fetch('/api/image-cleanup', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({months}),
+    })).json();
+    imageResult.textContent = `已清理 ${data.deleted} 张图片，释放 ${sizeText(data.freed_bytes)}。`;
+    await loadStats();
+  } catch (e) {
+    imageResult.textContent = '清理失败，请稍后重试。';
+  } finally {
+    imageButton.disabled = false;
+    imageRange.disabled = false;
+  }
+});
+
+messageButton.addEventListener('click', async () => {
+  const months = Number(messageRange.value);
+  messageButton.disabled = true;
+  messageRange.disabled = true;
+  messageResult.textContent = '正在计算清理范围…';
+  try {
+    const preview = await (await fetch(`/api/message-cleanup-preview?months=${months}`)).json();
+    const gapText = preview.gaps_trimmed
+      ? `，另有 ${preview.gaps_trimmed} 条跨界遗漏记录将缩短`
+      : '';
+    const warning = `将永久删除 ${preview.messages} 条消息、${preview.images} 张关联图片、${preview.attachments} 条附件信息和 ${preview.gaps_deleted} 条遗漏记录${gapText}。特别关注名单与运行设置保留。确认继续吗？`;
+    if (!confirm(warning)) {
+      messageResult.textContent = '已取消，没有删除任何数据。';
+      return;
+    }
+    messageResult.textContent = '正在删除…';
+    const response = await fetch('/api/message-cleanup', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({months, confirmed:true}),
+    });
+    if (!response.ok) throw new Error('cleanup failed');
+    const data = await response.json();
+    messageResult.textContent = `已删除 ${data.messages} 条消息、${data.images} 张关联图片和 ${data.gaps_deleted} 条遗漏记录。`;
+    await loadStats();
+  } catch (e) {
+    messageResult.textContent = '清理失败，没有完成操作。';
+  } finally {
+    messageButton.disabled = false;
+    messageRange.disabled = false;
+  }
+});
+
+loadStats();
+</script>
+</body>
+</html>

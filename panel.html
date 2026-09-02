@@ -154,6 +154,7 @@
   <span id="count"></span>
   <a class="header-link" href="/gaps" target="_blank">遗漏记录</a>
   <a class="header-link" href="/settings" target="_blank">特别关注</a>
+  <a class="header-link" href="/storage" target="_blank">存储管理</a>
   <a class="header-link" href="/export" target="_blank">导出</a>
 </header>
 <section id="search-panel" hidden>
@@ -645,6 +646,10 @@ clearSearchButton.addEventListener('click', () => location.reload());
 const es = new EventSource('/api/stream');
 es.onmessage = (ev) => {
   const m = JSON.parse(ev.data);
+  if (m.type === 'message_cleanup_done') {
+    location.reload();
+    return;
+  }
   // 控制类事件：补漏完成 → 提示并刷新
   if (m.type === 'backfill_done') {
     setTimeout(() => location.reload(), 1500);

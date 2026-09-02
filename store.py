@@ -192,7 +192,11 @@ def list_users():
             " SELECT r.from_uid, r.from_name, r.avatar_url, r.time,"
             " CASE WHEN s.uid IS NULL THEN 0 ELSE 1 END AS special"
             " FROM ranked r LEFT JOIN special_users s ON s.uid=r.from_uid"
-            " WHERE r.rn=1 ORDER BY r.time DESC"
+            " WHERE r.rn=1"
+            " UNION ALL"
+            " SELECT s.uid, s.note, '', NULL, 1 FROM special_users s"
+            " WHERE NOT EXISTS (SELECT 1 FROM ranked r"
+            " WHERE r.rn=1 AND r.from_uid=s.uid)"
         ).fetchall()
         return [
             {"uid": r[0], "name": r[1], "avatar_url": r[2],
