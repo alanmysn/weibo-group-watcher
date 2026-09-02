@@ -22,6 +22,7 @@ from flask import Flask, Response, abort, jsonify, request, send_file
 import media_cache
 import runtime_state
 import store
+import exporter
 
 log = logging.getLogger("watcher.web")
 
@@ -95,6 +96,46 @@ def settings():
 def gaps_page():
     with open("gaps.html", encoding="utf-8") as f:
         return f.read()
+
+
+@app.route("/export")
+def export_page():
+    with open("export.html", encoding="utf-8") as f:
+        return f.read()
+
+
+@app.route("/api/export-options")
+def api_export_options():
+    return jsonify({"users": store.list_users(),
+                    "today": time.strftime("%Y-%m-%d")})
+
+
+@app.route("/api/exports", methods=["POST"])
+def api_create_export():
+    data = request.get_json(silent=True) or {}
+    try:
+        result = exporter.create_export(
+            data.get("start_date"), data.get("end_date"),
+            data.get("uid", ""), data.get("category", "all"),
+            data.get("format", "md"),
+        )
+    except ValueError as error:
+        return jsonify({"error": str(error)}), 400
+    return jsonify({"file_name": result["file_name"],
+                    "count": result["count"],
+                    "download_url": "/api/exports/" + result["file_name"]})
+
+
+@app.route("/api/exports/<file_name>")
+def api_download_export(file_name):
+    if not re.fullmatch(
+            r"messages_\d{8}_\d{8}_[a-f0-9]{8}\.(md|jsonl|csv)",
+            file_name):
+        abort(404)
+    path = os.path.join(exporter.EXPORT_DIR, file_name)
+    if not os.path.isfile(path):
+        abort(404)
+    return send_file(path, as_attachment=True, download_name=file_name)
 
 
 @app.route("/api/messages")

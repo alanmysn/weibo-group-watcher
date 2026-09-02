@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>消息导出</title>
+<style>
+  :root { --bg:#f4f5f7; --card:#fff; --text:#1c1e21; --muted:#8a8f98; --border:#e4e6ea; --accent:#1d9bf0; --ok:#238636; --error:#c62828; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font-family:-apple-system,"Segoe UI","Microsoft YaHei",sans-serif; }
+  header { position:sticky; top:0; z-index:2; padding:14px 16px; background:rgba(255,255,255,.96); border-bottom:1px solid var(--border); }
+  h1 { margin:0; font-size:18px; }
+  header p { margin:4px 0 0; color:var(--muted); font-size:13px; }
+  main { max-width:680px; margin:0 auto; padding:12px; }
+  form { padding:16px; border:1px solid var(--border); border-radius:12px; background:var(--card); }
+  .row { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+  label { display:block; margin-bottom:12px; color:var(--muted); font-size:13px; }
+  input, select { width:100%; margin-top:5px; padding:9px 10px; border:1px solid var(--border); border-radius:8px; background:#fff; color:var(--text); font:inherit; }
+  button { width:100%; padding:10px; border:0; border-radius:8px; background:var(--accent); color:#fff; font:inherit; cursor:pointer; }
+  button:disabled { opacity:.6; cursor:wait; }
+  #result { display:none; margin-top:12px; padding:12px 14px; border:1px solid var(--border); border-radius:10px; background:var(--card); font-size:14px; }
+  #result.ok { display:block; color:var(--ok); }
+  #result.error { display:block; color:var(--error); }
+  #result a { margin-left:8px; color:var(--accent); text-decoration:none; }
+  @media (max-width:520px) { .row { grid-template-columns:1fr; gap:0; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>消息导出</h1>
+  <p>只读取本地 SQLite。导出文件可以删除，不影响原始消息。</p>
+</header>
+<main>
+  <form id="export-form">
+    <div class="row">
+      <label>开始日期<input id="start-date" type="date" required></label>
+      <label>结束日期<input id="end-date" type="date" required></label>
+    </div>
+    <label>发言人
+      <select id="user"><option value="">全部发言人</option></select>
+    </label>
+    <div class="row">
+      <label>内容类型
+        <select id="category">
+          <option value="all">全部消息</option>
+          <option value="user">仅用户发言</option>
+          <option value="image">图片与 GIF</option>
+          <option value="file">文件</option>
+          <option value="video">视频</option>
+          <option value="link">链接</option>
+          <option value="system">系统通知</option>
+        </select>
+      </label>
+      <label>文件格式
+        <select id="format">
+          <option value="md">Markdown</option>
+          <option value="jsonl">JSONL</option>
+          <option value="csv">CSV</option>
+        </select>
+      </label>
+    </div>
+    <button id="submit" type="submit">生成导出文件</button>
+  </form>
+  <div id="result"></div>
+</main>
+<script>
+const form = document.getElementById('export-form');
+const startDate = document.getElementById('start-date');
+const endDate = document.getElementById('end-date');
+const userSelect = document.getElementById('user');
+const categorySelect = document.getElementById('category');
+const formatSelect = document.getElementById('format');
+const submitButton = document.getElementById('submit');
+const result = document.getElementById('result');
+
+function esc(s) {
+  const el = document.createElement('div');
+  el.textContent = s ?? '';
+  return el.innerHTML;
+}
+
+async function loadOptions() {
+  try {
+    const response = await fetch('/api/export-options');
+    if (!response.ok) throw new Error('load failed');
+    const data = await response.json();
+    startDate.value = data.today;
+    endDate.value = data.today;
+    userSelect.innerHTML = '<option value="">全部发言人</option>' +
+      data.users.map(user =>
+        `<option value="${esc(user.uid)}">${esc(user.name || '未知')}</option>`
+      ).join('');
+  } catch (error) {
+    result.className = 'error';
+    result.textContent = '导出选项加载失败，请刷新页面重试。';
+  }
+}
+
+form.addEventListener('submit', async event => {
+  event.preventDefault();
+  submitButton.disabled = true;
+  submitButton.textContent = '正在生成…';
+  result.className = '';
+  result.textContent = '';
+  try {
+    const response = await fetch('/api/exports', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({
+        start_date:startDate.value, end_date:endDate.value,
+        uid:userSelect.value, category:categorySelect.value,
+        format:formatSelect.value,
+      }),
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || '生成失败');
+    result.className = 'ok';
+    result.innerHTML = `已生成 ${data.count} 条消息。` +
+      `<a href="${esc(data.download_url)}" download>下载文件</a>`;
+  } catch (error) {
+    result.className = 'error';
+    result.textContent = error.message || '生成失败，请稍后重试。';
+  } finally {
+    submitButton.disabled = false;
+    submitButton.textContent = '生成导出文件';
+  }
+});
+
+loadOptions();
+</script>
+</body>
+</html>

@@ -12,11 +12,14 @@
   h1 { margin:0; font-size:18px; }
   header p { margin:4px 0 0; color:var(--muted); font-size:13px; }
   main { max-width:680px; margin:0 auto; padding:8px 0 30px; }
+  .section-title { padding:12px 14px 7px; color:var(--muted); font-size:13px; font-weight:600; }
   .user { display:flex; align-items:center; gap:10px; padding:10px 14px; background:var(--card); border-bottom:1px solid var(--border); }
+  .special-group .user { background:#fff9e8; border-left:3px solid var(--gold); padding-left:11px; }
   .avatar { width:40px; height:40px; border-radius:50%; background:#e8edf2; object-fit:cover; }
   .name { flex:1; min-width:0; font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-  button { width:38px; height:38px; border:0; border-radius:50%; background:#eef1f4; color:#a5abb3; font-size:23px; cursor:pointer; }
-  button.on { background:#fff3cf; color:var(--gold); }
+  button { flex:none; min-width:58px; height:34px; padding:0 10px; border:0; border-radius:8px; background:#eef1f4; color:#5f6873; font-family:inherit; cursor:pointer; }
+  button.on { background:#fff0bd; color:#8a6100; }
+  button:disabled { opacity:.55; cursor:wait; }
   .empty { padding:30px; text-align:center; color:var(--muted); }
 </style>
 </head>
@@ -35,6 +38,13 @@ function esc(s) {
   return d.innerHTML;
 }
 
+function userHtml(user) {
+  const active = user.special;
+  return `<div class="user"><img class="avatar" src="/api/avatar/${encodeURIComponent(user.uid)}" onerror="this.style.visibility='hidden'">` +
+    `<div class="name">${esc(user.name || '未知')}</div>` +
+    `<button class="${active ? 'on' : ''}" data-uid="${esc(user.uid)}" data-on="${active ? '1' : '0'}" title="${active ? '取消特别关注' : '设为特别关注'}">${active ? '取消' : '☆ 关注'}</button></div>`;
+}
+
 async function loadUsers() {
   try {
     const data = await (await fetch('/api/special-users')).json();
@@ -42,11 +52,20 @@ async function loadUsers() {
       usersEl.innerHTML = '<div class="empty">还没有可设置的发言人</div>';
       return;
     }
-    usersEl.innerHTML = data.users.map(u =>
-      `<div class="user"><img class="avatar" src="/api/avatar/${encodeURIComponent(u.uid)}" onerror="this.style.visibility='hidden'">` +
-      `<div class="name">${esc(u.name || '未知')}</div>` +
-      `<button class="${u.special ? 'on' : ''}" data-uid="${esc(u.uid)}" data-on="${u.special ? '1' : '0'}" title="${u.special ? '取消特别关注' : '设为特别关注'}">★</button></div>`
-    ).join('');
+    const sorted = [...data.users].sort((a, b) =>
+      (a.name || '').localeCompare(b.name || '', 'zh-CN', {
+        sensitivity:'base', numeric:true,
+      })
+    );
+    const special = sorted.filter(user => user.special);
+    const others = sorted.filter(user => !user.special);
+    const specialHtml = special.length
+      ? `<section class="special-group"><div class="section-title">已特别关注（${special.length}）</div>${special.map(userHtml).join('')}</section>`
+      : '';
+    const othersHtml = others.length
+      ? `<section><div class="section-title">其他已记录用户（${others.length}）</div>${others.map(userHtml).join('')}</section>`
+      : '';
+    usersEl.innerHTML = specialHtml + othersHtml;
   } catch (e) {
     usersEl.innerHTML = '<div class="empty">加载失败，请稍后刷新</div>';
   }
@@ -63,9 +82,7 @@ usersEl.addEventListener('click', async (ev) => {
       body: JSON.stringify({uid:btn.dataset.uid, enabled}),
     });
     if (!r.ok) throw new Error('save failed');
-    btn.dataset.on = enabled ? '1' : '0';
-    btn.classList.toggle('on', enabled);
-    btn.title = enabled ? '取消特别关注' : '设为特别关注';
+    await loadUsers();
   } finally {
     btn.disabled = false;
   }
