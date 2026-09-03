@@ -2,16 +2,20 @@
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="theme-color" content="#ffffff">
+<meta name="mobile-web-app-capable" content="yes">
+<link rel="manifest" href="/app.webmanifest">
+<link rel="icon" href="/app-icon-192.png">
 <title>存储管理</title>
 <style>
   :root { --bg:#f4f5f7; --card:#fff; --text:#1c1e21; --muted:#747b85; --border:#e4e6ea; --blue:#1677ff; --red:#c9362b; }
   * { box-sizing:border-box; }
   body { margin:0; background:var(--bg); color:var(--text); font-family:-apple-system,"Segoe UI","Microsoft YaHei",sans-serif; }
-  header { padding:16px; background:#fff; border-bottom:1px solid var(--border); }
+  header { padding:max(16px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right)) 16px max(16px, env(safe-area-inset-left)); background:#fff; border-bottom:1px solid var(--border); }
   h1 { margin:0; font-size:19px; }
   header p { margin:5px 0 0; color:var(--muted); font-size:13px; }
-  main { max-width:680px; margin:0 auto; padding:14px; }
+  main { max-width:680px; margin:0 auto; padding:14px max(14px, env(safe-area-inset-right)) calc(14px + env(safe-area-inset-bottom)) max(14px, env(safe-area-inset-left)); }
   section { margin-bottom:14px; padding:16px; background:var(--card); border:1px solid var(--border); border-radius:12px; }
   h2 { margin:0 0 8px; font-size:16px; }
   p { margin:7px 0; color:var(--muted); font-size:13px; line-height:1.6; }
@@ -24,6 +28,10 @@
   #cleanup-images { background:var(--blue); }
   #cleanup-messages { background:var(--red); }
   .result { min-height:20px; margin-top:10px; color:var(--muted); font-size:13px; }
+  @media (max-width:520px) {
+    .controls { align-items:stretch; }
+    select, button { width:100%; min-height:40px; }
+  }
 </style>
 </head>
 <body>

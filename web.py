@@ -87,6 +87,26 @@ def index():
         return f.read()
 
 
+@app.route("/app.webmanifest")
+def app_manifest():
+    return send_file(
+        os.path.join(BASE_DIR, "app.webmanifest"),
+        mimetype="application/manifest+json",
+        max_age=3600,
+    )
+
+
+@app.route("/app-icon-<int:size>.png")
+def app_icon(size):
+    if size not in (192, 512):
+        abort(404)
+    return send_file(
+        os.path.join(BASE_DIR, f"app-icon-{size}.png"),
+        mimetype="image/png",
+        max_age=86400,
+    )
+
+
 @app.route("/settings")
 def settings():
     with open("settings.html", encoding="utf-8") as f:

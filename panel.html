@@ -2,7 +2,11 @@
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="theme-color" content="#ffffff">
+<meta name="mobile-web-app-capable" content="yes">
+<link rel="manifest" href="/app.webmanifest">
+<link rel="icon" href="/app-icon-192.png">
 <title>群消息面板</title>
 <style>
   :root {
@@ -21,6 +25,7 @@
     padding: 10px 14px; background: rgba(255,255,255,.95);
     border-bottom: 1px solid var(--border);
   }
+  .status-group { display: flex; align-items: center; gap: 8px; min-width: 0; }
   #dot { width: 9px; height: 9px; border-radius: 50%; background: var(--muted); }
   #dot.online { background: #00ba7c; }
   #dot.reconnecting { background: #ffb020; animation: blink 1s infinite; }
@@ -28,12 +33,10 @@
   @keyframes blink { 50% { opacity: .3; } }
   #status-text { color: var(--muted); font-size: 13px; }
   #count { margin-left: auto; color: var(--muted); font-size: 13px; }
+  nav { display: flex; align-items: center; gap: 8px; }
   .header-link { color: var(--muted); font-size: 13px; text-decoration: none; }
   .header-link:hover { color: var(--text); }
   button.header-link { border: 0; background: transparent; font-family: inherit; cursor: pointer; }
-  #search-toggle {
-    position: absolute; left: 50%; transform: translateX(-50%);
-  }
   #search-panel {
     position: sticky; z-index: 8; padding: 8px;
     background: rgba(244,245,247,.96); border-bottom: 1px solid var(--border);
@@ -86,7 +89,7 @@
   .content a { color: var(--accent); text-decoration: none; }
   .content a:hover { text-decoration: underline; }
   .emoji-img { height: 1.3em; vertical-align: -0.25em; }
-  .img-embed { display: block; max-width: 320px; border-radius: 10px; margin-top: 6px; }
+  .img-embed { display: block; max-width: min(320px, 100%); height: auto; border-radius: 10px; margin-top: 6px; }
   .media-placeholder { display: none; margin-top: 6px; color: var(--muted); font-size: 13px; }
   .attachment {
     margin-top: 6px; padding: 9px 11px; border: 1px solid var(--border);
@@ -144,18 +147,57 @@
     box-shadow: 0 3px 12px rgba(0,0,0,.2);
   }
   #latest-button:hover { filter: brightness(1.08); }
+  @media (max-width: 720px) {
+    header {
+      display: grid; grid-template-columns: minmax(0, 1fr) auto;
+      gap: 7px 10px;
+      padding: max(8px, env(safe-area-inset-top))
+               max(10px, env(safe-area-inset-right)) 8px
+               max(10px, env(safe-area-inset-left));
+    }
+    #status-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    #unread-badge { flex: none; }
+    #count { margin-left: 0; white-space: nowrap; }
+    nav {
+      grid-column: 1 / -1; justify-content: space-between;
+      border-top: 1px solid var(--border); padding-top: 7px;
+    }
+    .header-link {
+      min-height: 38px; display: inline-flex; align-items: center;
+      justify-content: center; padding: 0 4px;
+    }
+    main {
+      padding: 7px max(6px, env(safe-area-inset-right))
+               calc(52px + env(safe-area-inset-bottom))
+               max(6px, env(safe-area-inset-left));
+    }
+    .msg { gap: 8px; padding: 10px 9px 12px; }
+    .msg.special { padding-left: 8px; }
+    .avatar-wrap { width: 36px; height: 36px; }
+    .divider { margin-left: 4px; margin-right: 4px; }
+    .divider::before, .divider::after { width: 22%; }
+    #latest-button {
+      right: max(12px, env(safe-area-inset-right));
+      bottom: max(14px, env(safe-area-inset-bottom));
+      min-height: 40px;
+    }
+  }
 </style>
 </head>
 <body>
 <header>
-  <span id="dot"></span><span id="status-text">连接中…</span>
-  <button id="unread-badge" hidden title="跳到最早待读处">待读 0</button>
-  <button id="search-toggle" class="header-link" type="button" aria-expanded="false">搜索</button>
+  <div class="status-group">
+    <span id="dot"></span><span id="status-text">连接中…</span>
+    <button id="unread-badge" hidden title="跳到最早待读处">待读 0</button>
+  </div>
   <span id="count"></span>
-  <a class="header-link" href="/gaps" target="_blank">遗漏记录</a>
-  <a class="header-link" href="/settings" target="_blank">特别关注</a>
-  <a class="header-link" href="/storage" target="_blank">存储管理</a>
-  <a class="header-link" href="/export" target="_blank">导出</a>
+  <nav aria-label="面板功能">
+    <button id="search-toggle" class="header-link" type="button" aria-expanded="false">搜索</button>
+    <a class="header-link" href="/gaps" target="_blank">遗漏记录</a>
+    <a class="header-link" href="/settings" target="_blank">特别关注</a>
+    <a class="header-link" href="/storage" target="_blank">存储管理</a>
+    <a class="header-link" href="/export" target="_blank">导出</a>
+  </nav>
 </header>
 <section id="search-panel" hidden>
   <form id="search-form">
