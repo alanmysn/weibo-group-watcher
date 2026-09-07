@@ -14,6 +14,7 @@ import time
 import websocket
 
 import media_cache
+import reauth
 import runtime_state
 import store
 
@@ -27,6 +28,10 @@ CONNECT_CYCLE_TIMEOUT = 175  # 服务端 advice timeout=170s，本地稍放宽
 
 class SessionExpired(Exception):
     """会话被服务器作废（402/要求重新握手）——应重新握手而非退出。"""
+
+
+class AuthExpired(Exception):
+    """微博拒绝订阅私人频道，需要用户重新扫码。"""
 
 
 def load_cookie_header(cookie_path):
@@ -72,6 +77,22 @@ def start(cfg, stop_event=None):
             log.warning("会话被服务器作废（%s），%d 秒后重新握手", e, backoff)
             runtime_state.set_status("reconnecting", f"会话失效: {e}")
             store.open_gap(int(time.time()))  # 记缺口开始（不自动拉取，面板标注）
+        except AuthExpired:
+            log.warning("登录钥匙已失效，等待重新扫码")
+            runtime_state.set_status("expired", "需重新扫码")
+            store.open_gap(int(time.time()))
+            previous_mtime = os.path.getmtime(cfg["cookie_path"])
+            try:
+                reauth.refresh_cookies(cfg["cookie_path"])
+            except reauth.ReauthError as error:
+                log.error("自动扫码刷新未完成（%s）", error)
+                if not reauth.wait_for_cookie_change(
+                        cfg["cookie_path"], previous_mtime, stop_event):
+                    runtime_state.set_status("stopped")
+                    return
+            runtime_state.set_status("reconnecting", "扫码完成，正在重连")
+            backoff = 2
+            continue
         except (websocket.WebSocketException, OSError) as e:
             log.warning("连接异常断开（%s），%d 秒后重连", e, backoff)
             runtime_state.set_status("reconnecting", f"连接断开: {e}")
@@ -129,7 +150,10 @@ def _run_session(cfg, stop_event=None):
         for item in _frame_items(_recv_json(ws, 20)):
             if item.get("channel") == "/meta/subscribe":
                 if not item.get("successful"):
-                    raise RuntimeError(f"订阅失败（钥匙可能过期）: {item}")
+                    error = str(item.get("error", ""))
+                    if "auth fail" in error.lower():
+                        raise AuthExpired(error)
+                    raise RuntimeError(f"订阅失败: {error or '未知原因'}")
                 subscribed = True
     log.info("订阅成功，开始监听群消息…")
 

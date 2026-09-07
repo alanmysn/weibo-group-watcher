@@ -10,6 +10,7 @@ import logging
 import os
 import sys
 from ctypes import wintypes
+from logging.handlers import TimedRotatingFileHandler
 
 import config
 import store
@@ -45,8 +46,11 @@ def acquire_single_instance():
 def setup_logging():
     os.makedirs(LOG_DIR, exist_ok=True)
     handlers = [
-        logging.FileHandler(
-            os.path.join(LOG_DIR, "watcher.log"), encoding="utf-8"
+        TimedRotatingFileHandler(
+            os.path.join(LOG_DIR, "watcher.log"),
+            when="midnight",
+            backupCount=7,
+            encoding="utf-8",
         )
     ]
     if sys.stdout is not None:  # pythonw.exe 后台运行时没有终端输出流
