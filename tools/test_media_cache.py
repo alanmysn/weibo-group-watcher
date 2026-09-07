@@ -214,6 +214,21 @@ class MediaCacheTest(unittest.TestCase):
         self.assertEqual(0, result["freed_bytes"])
         self.assertEqual(4, result["size_bytes"])
 
+    def test_image_can_be_viewed_inline_or_downloaded(self):
+        self._insert_cached_image(15, "2026-08-20 00:00:00", b"image")
+        client = web.app.test_client()
+
+        inline = client.get("/api/image/15")
+        self.assertEqual(200, inline.status_code)
+        self.assertNotIn("attachment", inline.headers["Content-Disposition"])
+        inline.close()
+
+        download = client.get("/api/image/15?download=1")
+        self.assertEqual(200, download.status_code)
+        self.assertIn("attachment", download.headers["Content-Disposition"])
+        self.assertIn("15.jpg", download.headers["Content-Disposition"])
+        download.close()
+
     def test_manual_cleanup_accepts_month_range_or_all(self):
         self._insert_cached_image(13, "2026-05-01 00:00:00")
         self._insert_cached_image(14, "2026-08-20 00:00:00")

@@ -89,7 +89,7 @@
   .content a { color: var(--accent); text-decoration: none; }
   .content a:hover { text-decoration: underline; }
   .emoji-img { height: 1.3em; vertical-align: -0.25em; }
-  .img-embed { display: block; max-width: min(320px, 100%); height: auto; border-radius: 10px; margin-top: 6px; }
+  .img-embed { display: block; max-width: min(320px, 100%); height: auto; border-radius: 10px; margin-top: 6px; cursor: zoom-in; }
   .media-placeholder { display: none; margin-top: 6px; color: var(--muted); font-size: 13px; }
   .attachment {
     margin-top: 6px; padding: 9px 11px; border: 1px solid var(--border);
@@ -147,6 +147,24 @@
     box-shadow: 0 3px 12px rgba(0,0,0,.2);
   }
   #latest-button:hover { filter: brightness(1.08); }
+  #image-viewer {
+    position: fixed; inset: 0; z-index: 100;
+    background: rgba(0,0,0,.88); padding: 14px;
+    display: flex; flex-direction: column; align-items: center;
+  }
+  #image-viewer[hidden] { display: none; }
+  .viewer-bar {
+    width: 100%; display: flex; justify-content: flex-end; gap: 8px;
+  }
+  .viewer-action {
+    min-height: 40px; padding: 8px 12px; border: 1px solid rgba(255,255,255,.35);
+    border-radius: 8px; background: rgba(0,0,0,.45); color: #fff;
+    font: inherit; text-decoration: none; cursor: pointer;
+  }
+  #viewer-image {
+    min-width: 0; min-height: 0; max-width: 100%; max-height: calc(100% - 56px);
+    margin: auto; object-fit: contain;
+  }
   @media (max-width: 720px) {
     header {
       display: grid; grid-template-columns: minmax(0, 1fr) auto;
@@ -211,6 +229,14 @@
   <div class="sentinel" id="sentinel"></div>
 </main>
 <button id="latest-button" type="button" hidden>↓ 最新</button>
+<div id="image-viewer" role="dialog" aria-modal="true" aria-label="查看大图" hidden>
+  <div class="viewer-bar">
+    <a id="viewer-original" class="viewer-action" target="_blank" rel="noopener">查看原图</a>
+    <a id="viewer-download" class="viewer-action" download>下载</a>
+    <button id="viewer-close" class="viewer-action" type="button">关闭</button>
+  </div>
+  <img id="viewer-image" alt="大图">
+</div>
 
 <script>
 const feed = document.getElementById('feed');
@@ -226,6 +252,11 @@ const searchPanel = document.getElementById('search-panel');
 const searchToggle = document.getElementById('search-toggle');
 const headerEl = document.querySelector('header');
 const latestButton = document.getElementById('latest-button');
+const imageViewer = document.getElementById('image-viewer');
+const viewerImage = document.getElementById('viewer-image');
+const viewerOriginal = document.getElementById('viewer-original');
+const viewerDownload = document.getElementById('viewer-download');
+const viewerClose = document.getElementById('viewer-close');
 
 let oldestId = null;
 let loading = false;
@@ -276,6 +307,33 @@ function fmtTime(ts) {
   const hm = `${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;
   return today ? hm : `${d.getMonth()+1}/${d.getDate()} ${hm}`;
 }
+
+function openImageViewer(image) {
+  const message = image.closest('.msg');
+  if (!message) return;
+  const imageUrl = `/api/image/${message.dataset.id}`;
+  viewerImage.src = imageUrl;
+  viewerImage.alt = image.alt || '大图';
+  viewerOriginal.href = imageUrl;
+  viewerDownload.href = `${imageUrl}?download=1`;
+  imageViewer.hidden = false;
+  document.body.style.overflow = 'hidden';
+  viewerClose.focus();
+}
+
+function closeImageViewer() {
+  imageViewer.hidden = true;
+  viewerImage.removeAttribute('src');
+  document.body.style.overflow = '';
+}
+
+viewerClose.addEventListener('click', closeImageViewer);
+imageViewer.addEventListener('click', event => {
+  if (event.target === imageViewer) closeImageViewer();
+});
+document.addEventListener('keydown', event => {
+  if (event.key === 'Escape' && !imageViewer.hidden) closeImageViewer();
+});
 
 // [表情名] → 表情图
 function renderEmoji(text) {
@@ -673,6 +731,11 @@ searchForm.addEventListener('submit', async (event) => {
 });
 
 feed.addEventListener('click', async (event) => {
+  const image = event.target.closest('.img-embed');
+  if (image) {
+    openImageViewer(image);
+    return;
+  }
   const button = event.target.closest('.name');
   const message = button && button.closest('.msg');
   if (!message || !message.dataset.uid) return;

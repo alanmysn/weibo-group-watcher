@@ -395,7 +395,13 @@ def api_image(msg_id):
     path = media_cache.get_image_path(msg_id, cache_if_missing=True)
     if not path:
         abort(404)
-    return send_file(path, max_age=86400)
+    download = request.args.get("download") == "1"
+    return send_file(
+        path,
+        as_attachment=download,
+        download_name=os.path.basename(path) if download else None,
+        max_age=86400,
+    )
 
 
 @app.route("/api/attachment-info/<int:msg_id>")
